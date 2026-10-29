@@ -1,0 +1,12 @@
+[package]
+name = "nm-core"
+description = "Montis（山音）的本地数据层：路径、会话 Cookie、用户资料"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true

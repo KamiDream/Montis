@@ -1,0 +1,24 @@
+[package]
+name = "nm-app"
+description = "Montis（山音）桌面端：iced 界面与登录流程"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "melody"
+path = "src/main.rs"
+
+[dependencies]
+nm-core = { path = "../nm-core" }
+nm-api = { path = "../nm-api" }
+nm-audio = { path = "../nm-audio" }
+iced.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+# 读取本地音乐文件的标签与内嵌封面；0.22.2 是最后一个不强制要求 Rust 1.85 的版本。
+lofty = "=0.22.2"

@@ -1,0 +1,85 @@
+# Montis 非商业共享许可证 1.0
+
+Copyright (c) 2026 Montis contributors
+
+## 中文版（为准）
+
+### 1. 定义
+
+- **本软件**：Montis（山音）项目的源代码、目标代码、文档、图片及其他随附资源。
+- **商业使用**：以直接或间接获取经济利益为目的的使用，包括但不限于：销售、出租、收费下载、付费订阅、广告或流量变现、捐赠以外的收费、将其作为收费产品或收费服务的一部分、在商业组织内部用于生产经营活动。
+- **衍生作品**：对本软件进行修改、翻译、改编、组合、链接或以其他方式形成的任何作品。
+- **分发**：以任何方式向第三方提供本软件或衍生作品的副本，包括通过网络下载、应用商店、预装或随附方式提供。
+- **源代码**：修改衍生作品所需的首选形式，包括构建与安装所需的脚本和配置文件。
+
+### 2. 授权
+
+在遵守本许可证全部条款的前提下，任何人可以免费、非商业地使用、复制、修改、合并、发布和分发本软件及其衍生作品。
+
+### 3. 条件
+
+1. **保留声明**：本软件及衍生作品的所有副本必须保留本版权声明、本许可证全文以及原有的署名信息，不得移除或修改。
+2. **相同方式共享**：衍生作品必须以本许可证（或著作权人后续发布的、条款不更宽松的版本）整体开源发布，不得附加额外限制，也不得改用其他许可证。
+3. **提供源代码**：分发衍生作品（包括仅分发二进制形式）时，必须同时向接收者提供完整、可构建的对应源代码，获取方式应当免费且公开。若通过信息网络向公众提供衍生作品的功能，也必须在该服务中提供获取对应源代码的方式。
+4. **标明修改**：修改过的文件必须显著标明修改内容与修改日期。
+5. **不得暗示背书**：不得暗示原作者对衍生作品或使用行为提供担保或背书。
+
+### 4. 商业使用
+
+未经著作权人事先书面授权，不得将本软件或衍生作品用于任何商业用途。如需商业授权，请通过项目仓库的 issue 或其他公开联系方式与维护者联系。
+
+### 5. 终止
+
+违反本许可证任何条款的，本许可证自动终止，被授权人应立即停止使用与分发。在停止违约行为并完全补正后，许可证可以恢复；在终止前依本许可证合法分发的副本，其授权不受影响。
+
+### 6. 免责声明
+
+本软件按「现状」提供，不附带任何明示或默示的担保，包括但不限于适销性、特定用途适用性和不侵权的担保。在任何情况下，作者或著作权人均不对因本软件或本软件的使用或其他交易而产生的任何索赔、损害或其他责任承担责任，无论是合同诉讼、侵权行为还是其他方式。
+
+### 7. 许可证文本
+
+本许可证文本允许原样复制与分发，但不得修改。本许可证的中文版与英文版如有冲突，以中文版为准。
+
+---
+
+# Montis Non-Commercial ShareAlike License 1.0
+
+Copyright (c) 2026 Montis contributors
+
+## English Version (for reference)
+
+### 1. Definitions
+
+- **The Software**: the source code, object code, documentation, images, and other accompanying resources of the Montis project.
+- **Commercial Use**: any use aimed at direct or indirect financial gain, including but not limited to selling, renting, paid downloads, paid subscriptions, advertising or traffic monetization, charging beyond donations, inclusion in a paid product or paid service, or use in production or business operations within a commercial organization.
+- **Derivative Work**: any work created by modifying, translating, adapting, combining, linking, or otherwise building upon the Software.
+- **Distribute**: providing copies of the Software or a Derivative Work to any third party in any manner, including downloads, app stores, preinstallation, or bundling.
+- **Source Code**: the preferred form for making modifications to a Derivative Work, including scripts and configuration files needed to build and install it.
+
+### 2. Grant
+
+Subject to full compliance with this License, anyone may use, copy, modify, merge, publish, and distribute the Software and Derivative Works free of charge for non-commercial purposes.
+
+### 3. Conditions
+
+1. **Notices**: All copies of the Software and Derivative Works must retain this copyright notice, the full text of this License, and the original attribution, without removal or alteration.
+2. **ShareAlike**: Derivative Works must be released in their entirety under this License (or a later version published by the copyright holder with terms no less restrictive), without additional restrictions and without relicensing under any other license.
+3. **Source Availability**: When distributing a Derivative Work, including distribution in binary form only, you must also provide recipients with the complete, buildable corresponding Source Code, freely and publicly available. If you make the functionality of a Derivative Work available to the public over a network, you must also offer a way to obtain the corresponding Source Code through that service.
+4. **Mark Modifications**: Modified files must prominently state the changes made and the date of modification.
+5. **No Endorsement**: You may not imply that the original authors endorse the Derivative Work or its use.
+
+### 4. Commercial Use
+
+You may not use the Software or any Derivative Work for any Commercial Use without prior written permission from the copyright holder. For commercial licensing, please contact the maintainers through the project repository's issues or another public contact channel.
+
+### 5. Termination
+
+Any violation of this License automatically terminates it, and the licensee must immediately stop using and distributing the Software. The License may be reinstated after the violation is fully cured; copies lawfully distributed under this License before termination remain authorized.
+
+### 6. Disclaimer of Warranty and Limitation of Liability
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+### 7. License Text
+
+This License text may be copied and distributed verbatim, but may not be modified. In case of conflict between the Chinese and English versions, the Chinese version prevails.

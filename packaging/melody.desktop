@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Montis
+Name[zh_CN]=山音
+GenericName=网易云音乐客户端
+Comment=网易云音乐桌面客户端（Rust + iced）
+Comment[zh_CN]=网易云音乐桌面客户端（Rust + iced）
+Exec=melody
+Icon=melody
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;netease;cloudmusic;网易云;音乐;播放器;
+StartupWMClass=melody
+StartupNotify=false
