@@ -648,6 +648,10 @@ pub enum Message {
     OpenAbout,
     /// 在系统浏览器中打开项目主页。
     OpenProjectUrl,
+    /// 首次启动的使用须知：确认后写入设置并关闭弹窗。
+    AcceptDisclaimer,
+    /// 使用须知弹窗打开时吞掉背景点击。
+    DisclaimerBlocked,
     /// 打开独立的搜索页（歌曲搜索从首页拆出）。
     OpenSearch,
     /// 打开每日推荐页。
@@ -2012,6 +2016,17 @@ impl App {
                     }
                 }
             }
+            Message::AcceptDisclaimer => {
+                if !self.ui.disclaimer_accepted {
+                    self.ui.disclaimer_accepted = true;
+                    // 只确认一次：立即落盘，不等滑杆之类的去抖动保存。
+                    if let Err(error) = self.ui.save(&self.paths.settings_file()) {
+                        self.storage_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+            Message::DisclaimerBlocked => Task::none(),
             Message::OpenSearch => {
                 self.show_quality = false;
                 self.show_queue = false;
@@ -4246,6 +4261,13 @@ impl App {
             _ => blank_layer(),
         };
 
+        // 首次启动的使用须知：压在所有页面与浮层之上，确认前拦截全部操作。
+        let disclaimer_layer: Element<'_> = if self.ui.disclaimer_accepted {
+            blank_layer()
+        } else {
+            views::disclaimer::view()
+        };
+
         // 平铺风格：不再铺柔光装饰，整页只用单色背景与卡片。
         iced::widget::container(
             iced::widget::Stack::with_children(vec![
@@ -4260,6 +4282,7 @@ impl App {
                 clear_layer,
                 folders_layer,
                 toast_layer,
+                disclaimer_layer,
             ])
             .width(iced::Length::Fill)
             .height(iced::Length::Fill),

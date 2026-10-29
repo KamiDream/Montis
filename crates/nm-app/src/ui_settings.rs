@@ -20,6 +20,8 @@ pub struct UiSettings {
     pub dock_opacity: f32,
     /// 音频缓存上限（MB）；0 表示不缓存。
     pub cache_limit_mb: u64,
+    /// 首次启动的使用须知是否已确认：只保存一次，之后不再弹出。
+    pub disclaimer_accepted: bool,
 }
 
 impl Default for UiSettings {
@@ -28,6 +30,7 @@ impl Default for UiSettings {
             animation_speed: 1.0,
             dock_opacity: 0.84,
             cache_limit_mb: DEFAULT_LIMIT_MB,
+            disclaimer_accepted: false,
         }
     }
 }
@@ -153,6 +156,22 @@ mod tests {
         settings.cache_limit_mb = 4 * 1024;
         settings.save(&path).expect("save");
         assert_eq!(UiSettings::load(&path).cache_limit_mb, 4 * 1024);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disclaimer_is_only_accepted_once() {
+        // 旧配置没有这个字段时默认未确认。
+        let path = std::env::temp_dir().join("montis-disclaimer-ui-settings.json");
+        std::fs::write(&path, r#"{"animation_speed": 1.4}"#).expect("write");
+        assert!(!UiSettings::load(&path).disclaimer_accepted);
+
+        let settings = UiSettings {
+            disclaimer_accepted: true,
+            ..UiSettings::default()
+        };
+        settings.save(&path).expect("save");
+        assert!(UiSettings::load(&path).disclaimer_accepted);
         let _ = std::fs::remove_file(&path);
     }
 }
