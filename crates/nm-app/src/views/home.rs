@@ -472,6 +472,24 @@ fn about_page(app: &App) -> Element<'_> {
         .spacing(10),
     );
 
+    let project = widgets::card(
+        column![
+            widgets::section_title("项目地址"),
+            row![
+                container(text("GitHub").size(10).color(theme::DIM2)).width(Length::Fixed(48.0)),
+                link(
+                    crate::app::PROJECT_URL,
+                    theme::ACCENT,
+                    Message::OpenProjectUrl,
+                ),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+            widgets::hint("点击用系统浏览器打开"),
+        ]
+        .spacing(8),
+    );
+
     let privacy = widgets::card(
         column![
             row![
@@ -491,7 +509,7 @@ fn about_page(app: &App) -> Element<'_> {
     );
 
     // 顶部留一条空白：右下角 / 右上角是自绘的窗口按钮，别让品牌卡盖到它们下面。
-    scrollable(column![widgets::vspace(26.0), brand, facts, stack, privacy].spacing(16))
+    scrollable(column![widgets::vspace(26.0), brand, facts, stack, project, privacy].spacing(16))
         .height(Length::Fill)
         .style(theme::scrollable_hidden)
         .into()

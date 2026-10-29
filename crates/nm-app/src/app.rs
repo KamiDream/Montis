@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,9 @@ use crate::visualizer::{VisualField, VisualToggle, VisualizerConfig};
 use crate::widgets;
 
 pub type Element<'a> = iced::Element<'a, Message>;
+
+/// 项目主页：关于页里点击后交给系统浏览器打开。
+pub(crate) const PROJECT_URL: &str = "https://github.com/KamiDream/Montis";
 
 /// 正在播放页与播放条上的频谱条数。
 pub(crate) const BAND_COUNT: usize = 72;
@@ -642,6 +646,8 @@ pub enum Message {
     OpenSettings,
     /// 打开独立的「关于」页（品牌与版本信息）。
     OpenAbout,
+    /// 在系统浏览器中打开项目主页。
+    OpenProjectUrl,
     /// 打开独立的搜索页（歌曲搜索从首页拆出）。
     OpenSearch,
     /// 打开每日推荐页。
@@ -1987,6 +1993,24 @@ impl App {
                 self.artist = None;
                 self.view_fade = 1.0;
                 Task::none()
+            }
+            Message::OpenProjectUrl => {
+                // 项目只面向 Linux 桌面，直接交给系统的 URL 处理器。
+                match Command::new("xdg-open").arg(PROJECT_URL).spawn() {
+                    Ok(mut child) => {
+                        // 等子进程退出并回收，避免应用长时间运行时留下僵尸进程。
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                        Task::none()
+                    }
+                    Err(error) => {
+                        self.show_toast(format!(
+                            "无法打开浏览器（{error}），请手动访问 {PROJECT_URL}"
+                        ));
+                        Task::none()
+                    }
+                }
             }
             Message::OpenSearch => {
                 self.show_quality = false;
