@@ -1633,28 +1633,9 @@ fn cover_with_badge<'a>(app: &App, url: &str, size: f32, label: &str) -> Element
 }
 
 fn playlist_page<'a>(app: &'a App, state: &'a PlaylistState) -> Element<'a> {
-    // 本地收藏 / 本地音乐都从侧边栏直接进入，不需要「返回我的歌单」。
-    let back: Option<Element<'a>> = if state.local_liked || state.local_downloads {
-        None
-    } else {
-        Some(
-            mouse_area(
-                row![
-                    text("←").size(14).color(theme::ACCENT),
-                    text("返回我的歌单").size(12).color(theme::ACCENT),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
-            )
-            .on_press(Message::ClosePlaylist)
-            .interaction(mouse::Interaction::Pointer)
-            .into(),
-        )
-    };
-
     if state.busy {
         let content = column![
-            back.unwrap_or_else(|| widgets::vspace(14.0)),
+            widgets::vspace(14.0),
             widgets::card(
                 row![
                     widgets::spinner(app.phase, 4.0, theme::ACCENT),
@@ -1670,7 +1651,7 @@ fn playlist_page<'a>(app: &'a App, state: &'a PlaylistState) -> Element<'a> {
 
     if let Some(error) = &state.error {
         let content = column![
-            back.unwrap_or_else(|| widgets::vspace(14.0)),
+            widgets::vspace(14.0),
             widgets::card(
                 column![
                     widgets::error_text(error.clone()),
@@ -1685,20 +1666,16 @@ fn playlist_page<'a>(app: &'a App, state: &'a PlaylistState) -> Element<'a> {
 
     let Some(detail) = &state.detail else {
         let content = column![
-            back.unwrap_or_else(|| widgets::vspace(14.0)),
+            widgets::vspace(14.0),
             widgets::card(widgets::hint("这个歌单暂时没有内容。")),
         ]
         .spacing(14);
         return content.into();
     };
 
-    // 返回链接与标题卡片固定在顶部，不随歌曲列表滚动。
-    // 本地收藏页没有返回链接，用同高的留白顶住，避免标题卡顶到窗口按钮下面。
-    let header = column![
-        back.unwrap_or_else(|| widgets::vspace(14.0)),
-        playlist_header(app, state, detail),
-    ]
-    .spacing(14);
+    // 标题卡片固定在顶部，不随歌曲列表滚动。
+    // 顶部留白与本地页面一致，避免标题卡顶到窗口按钮下面。
+    let header = column![widgets::vspace(14.0), playlist_header(app, state, detail),].spacing(14);
     let list: Element<'_> = if state.local_liked && app.liked.is_empty() {
         widgets::card(
             column![

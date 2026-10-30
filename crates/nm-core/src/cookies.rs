@@ -10,41 +10,105 @@ pub type Cookies = BTreeMap<String, String>;
 
 /// 解析用户粘贴的 Cookie 字符串。
 ///
-/// 兼容三种常见形式：
+/// 兼容几种常见形式：
 /// * 完整的 `MUSIC_U=...; __csrf=...`；
 /// * 从开发者工具里只复制的 `MUSIC_U` 值；
-/// * 带换行 / 多余空格的粘贴内容。
+/// * 带换行 / 多余空格的粘贴内容；
+/// * 从开发者工具 Cookies 表格整行 / 整表复制的内容（制表符分列）。
 pub fn parse_cookie_input(input: &str) -> Cookies {
-    let normalized = input.replace(['\r', '\n'], ";");
-    let trimmed = normalized.trim();
     let mut cookies = Cookies::new();
-    if trimmed.is_empty() {
-        return cookies;
-    }
+    let input = strip_cookie_label(input.trim());
+    let input = input.trim_matches('"');
 
-    // 只粘贴了一个值：按 MUSIC_U 处理。
-    if !trimmed.contains('=') {
-        cookies.insert("MUSIC_U".to_string(), trimmed.trim_matches('"').to_string());
-        return cookies;
-    }
-
-    for part in trimmed.split(';') {
-        let part = part.trim();
-        if part.is_empty() {
+    for line in input.split(['\r', '\n']) {
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
-        let Some((name, value)) = part.split_once('=') else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty() {
+
+        // Cookies 表格的每一行是 `名称\t值\t域\t路径…`。整行复制时按列取
+        // 前两列；否则会把域名、路径也当成独立的 Cookie。
+        if line.contains('\t') {
+            if let Some((name, value)) = table_row(line) {
+                cookies.insert(name, value);
+            }
             continue;
         }
-        let value = value.trim().trim_matches('"');
-        cookies.insert(name.to_string(), value.to_string());
+
+        // 普通 Cookie 头：同一行里用 `;` 分隔多个键值。
+        for part in line.split(';') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+
+            if let Some((name, value)) = part.split_once('=') {
+                let name = name.trim();
+                if is_cookie_name(name) {
+                    cookies.insert(name.to_string(), clean_value(value));
+                }
+                continue;
+            }
+
+            // 没有 `=`：要么是单独复制的值，要么是行复制时制表符已经被
+            // 输入框吞掉的 `MUSIC_U<值>域名`。两者都按 MUSIC_U 处理。
+            let value = recover_music_u(part).unwrap_or_else(|| clean_value(part));
+            if !value.is_empty() {
+                cookies.insert("MUSIC_U".to_string(), value);
+            }
+        }
     }
 
     cookies
+}
+
+/// 去掉 `Cookie:` / `Set-Cookie:` 这类复制自请求头的前缀。
+fn strip_cookie_label(input: &str) -> &str {
+    for label in ["cookie:", "set-cookie:", "cookies:"] {
+        if input
+            .get(..label.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(label))
+        {
+            return input[label.len()..].trim();
+        }
+    }
+    input
+}
+
+/// Cookie 名称允许的字符；用于排除 `Cookie:` 残留、域名等无效条目。
+fn is_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+fn clean_value(value: &str) -> String {
+    value.trim().trim_matches('"').to_string()
+}
+
+fn table_row(line: &str) -> Option<(String, String)> {
+    let mut columns = line.split('\t').map(str::trim);
+    let name = columns.next()?.trim_end_matches(':');
+    let value = columns.next().unwrap_or_default();
+    if !is_cookie_name(name) || value.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), clean_value(value)))
+}
+
+/// 输入框（iced 的 `text_input`）粘贴时会丢弃制表符与换行，所以从
+/// Cookies 表格整行复制后可能只剩 `MUSIC_U<值>music.163.com/…`。
+/// `MUSIC_U` 的值是十六进制串，遇到域名里的字母就能截断。
+fn recover_music_u(token: &str) -> Option<String> {
+    let rest = token.strip_prefix("MUSIC_U")?;
+    let value: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit() || *c == '=')
+        .collect();
+
+    // 太短的内容多半只是误粘贴，不要当凭证。
+    (value.len() >= 16).then_some(value)
 }
 
 /// 把一条 `Set-Cookie` 响应头合并进会话。
@@ -122,6 +186,48 @@ mod tests {
         let cookies = parse_cookie_input("MUSIC_U=a\n__csrf=b\r\n");
         assert_eq!(cookies.len(), 2);
         assert_eq!(cookies.get("__csrf").map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn header_label_is_stripped() {
+        let cookies = parse_cookie_input("Cookie: MUSIC_U=abc; __csrf=xyz");
+        assert_eq!(cookies.get("MUSIC_U").map(String::as_str), Some("abc"));
+        assert_eq!(cookies.get("__csrf").map(String::as_str), Some("xyz"));
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn devtools_table_rows_are_parsed() {
+        // 从 DevTools 的 Cookies 表格整段复制：制表符分列，每行一个 Cookie。
+        let cookies = parse_cookie_input(
+            "MUSIC_U\t00AB12CD34EF56AB78CD90EF12AB34CD\t.music.163.com\t/\t2027-09-01\n\
+             __csrf\tdeadbeef\t.music.163.com\t/\tSession",
+        );
+        assert_eq!(
+            cookies.get("MUSIC_U").map(String::as_str),
+            Some("00AB12CD34EF56AB78CD90EF12AB34CD")
+        );
+        assert_eq!(cookies.get("__csrf").map(String::as_str), Some("deadbeef"));
+        assert_eq!(cookies.len(), 2);
+    }
+
+    #[test]
+    fn music_u_copied_as_row_is_recovered() {
+        // 输入框吞掉制表符后，整行复制会变成 `MUSIC_U<值>域名`。
+        let cookies =
+            parse_cookie_input("MUSIC_U00AB12CD34EF56AB78CD90EF12AB34CD.music.163.com/2027-09-01");
+        assert_eq!(
+            cookies.get("MUSIC_U").map(String::as_str),
+            Some("00AB12CD34EF56AB78CD90EF12AB34CD")
+        );
+        assert_eq!(cookies.len(), 1);
+
+        // 域名没有前导点（host-only Cookie）时同样要截断。
+        let cookies = parse_cookie_input("MUSIC_U00AB12CD34EF56AB78CD90EF12AB34CDmusic.163.com/");
+        assert_eq!(
+            cookies.get("MUSIC_U").map(String::as_str),
+            Some("00AB12CD34EF56AB78CD90EF12AB34CD")
+        );
     }
 
     #[test]

@@ -6,6 +6,14 @@ members = [
   "crates/nm-audio",
   "crates/nm-app",
 ]
+# 打了输入法补丁的 iced_winit（见 vendor/iced_winit 里的注释）。
+exclude = ["vendor/iced_winit"]
+
+# iced 0.13 完全没有输入法支持：`iced_winit` 会把 winit 的 `Ime` 事件丢掉，
+# 也从不调用 `set_ime_allowed`，导致中文输入法在输入框里不可用。
+# 这里用一份最小补丁的 iced_winit 替换官方 crate（其余 iced 组件仍用 0.13）。
+[patch.crates-io]
+iced_winit = { path = "vendor/iced_winit" }
 
 [workspace.package]
 version = "0.1.0"

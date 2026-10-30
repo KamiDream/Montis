@@ -326,10 +326,14 @@ impl NeteaseClient {
             .unwrap_or(200);
 
         if code != 200 {
+            write_debug_json(&root);
             return Ok(None);
         }
 
         let Some(profile) = body.get("profile").filter(|value| !value.is_null()) else {
+            // 登录态校验失败：把原始响应留给 `MELO_DEBUG_JSON`，方便排查
+            // “同一 Cookie 在浏览器 / 其他客户端能用、这里却不行”的情况。
+            write_debug_json(&root);
             return Ok(None);
         };
 
@@ -337,6 +341,7 @@ impl NeteaseClient {
             .map_err(|error| ApiError::Decode(format!("用户资料格式异常：{error}")))?;
 
         if profile.user_id == 0 {
+            write_debug_json(&root);
             return Ok(None);
         }
 
@@ -929,7 +934,11 @@ fn parse_verify_challenge(body: &Value) -> Option<QrVerify> {
 /// 方便对照不同版本的返回结构。
 fn dump_debug_body(body: &Value) {
     eprintln!("[melo] 8821 response: {body}");
+    write_debug_json(body);
+}
 
+/// 仅在设置了 `MELO_DEBUG_JSON` 时写出响应，避免默认情况下把会话数据写到磁盘。
+fn write_debug_json(body: &Value) {
     let Ok(path) = std::env::var("MELO_DEBUG_JSON") else {
         return;
     };

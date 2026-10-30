@@ -18,7 +18,7 @@ use nm_api::{
     Profile, SearchPage, Song, UserStats,
 };
 use nm_audio::{Analyzer, Engine, SpectrumProcessor};
-use nm_core::{parse_cookie_input, AppPaths, Session};
+use nm_core::{cookie_header, parse_cookie_input, AppPaths, Session};
 
 use crate::audio_cache::{self, AudioCache, MB};
 use crate::avatar;
@@ -52,6 +52,10 @@ const SCROLL_IDLE: Duration = Duration::from_millis(600);
 /// 滚动条淡入 / 淡出速度（每秒完成比例）：出现快、消失慢。
 const SCROLL_FADE_IN: f32 = 1.0 / 0.12;
 const SCROLL_FADE_OUT: f32 = 1.0 / 0.36;
+/// 拖动进度条时，指针停稳多久后才真正 seek。
+/// 鼠标移动会以每帧频率触发 `SeekTo`，若每次都调用 `try_seek`，
+/// 音频线程会不断跳转、积压命令，听感像在倒磁带。
+const SEEK_COMMIT_DELAY: Duration = Duration::from_millis(160);
 
 /// 悬浮提示（如「已自动跳过」）的总时长与淡入 / 淡出秒数。
 const TOAST_LIFE: Duration = Duration::from_millis(2400);
@@ -454,6 +458,8 @@ pub(crate) struct PlayerState {
     pub(crate) duration: Duration,
     /// 刚发起 seek 时的目标位置；音频线程追上后清空。
     pub(crate) seek_pending: Option<(Duration, Instant)>,
+    /// 待提交的 seek（拖动期间只记录目标，停稳后再交给音频线程）。
+    pub(crate) seek_commit: Option<(Duration, Instant)>,
     pub(crate) volume: f32,
     /// 静音前的音量；`Some` 表示当前已静音。
     pub(crate) muted_volume: Option<f32>,
@@ -493,6 +499,7 @@ impl PlayerState {
             position: Duration::ZERO,
             duration: Duration::ZERO,
             seek_pending: None,
+            seek_commit: None,
             volume: DEFAULT_VOLUME,
             muted_volume: None,
             quality: AudioQuality::default(),
@@ -581,6 +588,9 @@ pub enum Message {
     PointerMoved(Point),
     CookieChanged(String),
     CookieSubmit,
+    /// 从剪贴板读取原始 Cookie（绕过输入框对换行 / 制表符的过滤）。
+    PasteCookie,
+    CookiePasted(Option<String>),
     SessionChecked(Result<Option<Profile>, String>),
     ProfileLoaded(Result<Option<Profile>, String>),
     CookieChecked(Result<Option<Profile>, String>),
@@ -1389,7 +1399,10 @@ impl App {
                     };
                     *fade = approach(*fade, target, dt * speed * rate);
                 }
-                let player_task = self.refresh_player();
+                let player_task = {
+                    self.flush_seek();
+                    self.refresh_player()
+                };
                 // 告诉场景当前画布范围：画布铺满窗口，粒子飞出屏幕才移除。
                 let stage = views::player::stage_metrics(self.viewport, &self.visual);
                 self.ring.set_view(crate::ring::ViewBounds {
@@ -1428,6 +1441,30 @@ impl App {
                 Task::none()
             }
             Message::CookieSubmit => self.cookie_login(),
+            Message::PasteCookie => iced::clipboard::read().map(Message::CookiePasted),
+            Message::CookiePasted(result) => {
+                match result {
+                    Some(text) => {
+                        let cookies = parse_cookie_input(&text);
+                        if cookies
+                            .get("MUSIC_U")
+                            .map(|value| !value.is_empty())
+                            .unwrap_or(false)
+                        {
+                            // 回填成规范的单行 Cookie，方便用户核对后再提交。
+                            self.cookie_input = cookie_header(&cookies);
+                            self.login_error = None;
+                        } else {
+                            self.login_error =
+                                Some("剪贴板里没有找到 MUSIC_U，请重新复制。".to_string());
+                        }
+                    }
+                    None => {
+                        self.login_error = Some("无法读取剪贴板，请手动粘贴 Cookie。".to_string());
+                    }
+                }
+                Task::none()
+            }
             Message::SessionChecked(result) => match result {
                 Ok(Some(profile)) => self.finish_login(profile),
                 Ok(None) => {
@@ -1819,9 +1856,11 @@ impl App {
                 let fraction = fraction.clamp(0.0, 1.0);
                 if self.player.duration > Duration::ZERO {
                     let target = self.player.duration.mul_f32(fraction);
+                    let now = Instant::now();
                     self.player.position = target;
-                    self.player.seek_pending = Some((target, Instant::now()));
-                    self.player.engine.seek(target);
+                    self.player.seek_pending = Some((target, now));
+                    // 拖动期间只记录目标，等指针停稳再由 `flush_seek` 真正 seek 一次。
+                    self.player.seek_commit = Some((target, now));
                     // 恢复后还没开始播放：把恢复点一起拖到新位置，下次播放从这里开始。
                     if self.player.pending_resume.is_some() {
                         self.player.pending_resume = Some(target);
@@ -2384,6 +2423,7 @@ impl App {
                             .usage();
                         // 恢复场景：音频真正加载完成后再 seek，命令顺序能保证它生效。
                         if let Some(position) = self.player.pending_resume.take() {
+                            self.player.seek_commit = None;
                             self.player.engine.seek(position);
                             self.player.position = position;
                             self.player.seek_pending = Some((position, Instant::now()));
@@ -2437,8 +2477,10 @@ impl App {
             .map(|value| !value.is_empty())
             .unwrap_or(false)
         {
-            self.login_error =
-                Some("请粘贴包含 MUSIC_U 的 Cookie，或直接粘贴 MUSIC_U 的值。".to_string());
+            self.login_error = Some(
+                "请粘贴包含 MUSIC_U 的 Cookie；从开发者工具整行 / 整表复制时请点「粘贴」按钮。"
+                    .to_string(),
+            );
             return Task::none();
         }
 
@@ -3709,6 +3751,7 @@ impl App {
         self.player.position = Duration::ZERO;
         self.player.duration = Duration::ZERO;
         self.player.seek_pending = None;
+        self.player.seek_commit = None;
         self.player.pending_resume = None;
         self.player.pause_after_load = false;
         self.player.loaded_quality.clear();
@@ -3760,6 +3803,7 @@ impl App {
         self.player.position = resume;
         self.player.pending_resume = (!resume.is_zero()).then_some(resume);
         self.player.seek_pending = None;
+        self.player.seek_commit = None;
         self.player.duration = Duration::from_millis(song.dt);
         self.player.loaded_quality.clear();
         self.player.processor.reset(Some(BAND_COUNT));
@@ -3927,9 +3971,31 @@ impl App {
     fn restart_current(&mut self) -> Task<Message> {
         self.player.position = Duration::ZERO;
         self.player.seek_pending = Some((Duration::ZERO, Instant::now()));
+        self.player.seek_commit = None;
         self.player.engine.seek(Duration::ZERO);
         self.mark_player_dirty();
         Task::none()
+    }
+
+    /// 指针停稳后，把拖动产生的目标位置真正交给音频线程。
+    ///
+    /// 拖动时 `SeekTo` 会随鼠标事件高频触发；只有停顿超过
+    /// `SEEK_COMMIT_DELAY` 才提交一次，避免音频线程被连续的
+    /// `try_seek` 堆满（听感上是“倒带”声）。
+    fn flush_seek(&mut self) {
+        let Some((target, requested)) = self.player.seek_commit else {
+            return;
+        };
+        if requested.elapsed() < SEEK_COMMIT_DELAY {
+            return;
+        }
+
+        self.player.seek_commit = None;
+        // 音频还没加载完成：恢复点已经更新，等 TrackLoaded 时再 seek。
+        if self.player.loading {
+            return;
+        }
+        self.player.engine.seek(target);
     }
 
     /// 每次界面 Tick 都同步一次播放器快照与频谱。
@@ -4047,6 +4113,7 @@ impl App {
         self.player.loading = false;
         self.player.error = None;
         self.player.seek_pending = None;
+        self.player.seek_commit = None;
         self.player.pending_resume = None;
         self.player.loaded_quality.clear();
         self.player.fm_queue = false;

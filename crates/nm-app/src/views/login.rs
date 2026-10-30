@@ -199,7 +199,7 @@ fn cookie_panel(app: &App) -> Element<'_> {
             .align_y(Alignment::Center),
             guide_row("1", "在浏览器登录 music.163.com"),
             guide_row("2", "开发者工具 → Application → Cookies"),
-            guide_row("3", "复制 MUSIC_U，或粘贴整段 Cookie"),
+            guide_row("3", "复制 MUSIC_U，或点「粘贴」导入整段 Cookie"),
         ]
         .spacing(7),
     )
@@ -220,6 +220,15 @@ fn cookie_panel(app: &App) -> Element<'_> {
         .size(12)
         .width(Length::Fill)
         .style(theme::input);
+
+    // 输入框粘贴时会丢掉换行与制表符，从 Cookies 表格整行复制的内容会
+    // 被拼坏；这个按钮直接读剪贴板原始内容，再做归一化。
+    let paste = button(text("粘贴").size(11).color(theme::FG))
+        .on_press(Message::PasteCookie)
+        .padding(Padding::from([11, 14]))
+        .style(theme::ghost);
+
+    let input = row![input, paste].spacing(8).align_y(Alignment::Center);
 
     let action: Element<'_> = if app.cookie_busy {
         button(

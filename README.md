@@ -258,11 +258,18 @@ crates/
   nm-api/    网易云接口层：weapi 加密、登录、搜索、歌单、歌手、推荐、播放地址
   nm-audio/  音频层：rodio 播放线程、采样环形缓冲、FFT 频段分析
   nm-app/    iced 界面与本地状态：页面、播放队列、下载、收藏、缓存、频谱可视化
+vendor/
+  iced_winit/  打了输入法补丁的 iced_winit（见下方说明）
 ```
 
 `nm-app/src/app.rs` 集中保存界面状态与 `Message`；`views/` 放各页面与播放条；
 `*_store.rs` / `*_cache.rs` 负责播放快照、收藏、下载库、音频缓存、封面缓存与歌单快照的本地读写；
 `ring.rs` / `viz.rs` / `visualizer.rs` 负责环形频谱的场景、着色与参数。
+
+> iced 0.13 本身不支持输入法：`iced_winit` 会丢弃 winit 的 `Ime` 事件，也不调用
+> `set_ime_allowed`。`vendor/iced_winit` 是 0.13.0 的最小补丁版本，负责开启输入法、
+> 跟随指针定位候选窗，并把提交的文本拆成逐字符事件交给 `text_input`。
+> 升级到 iced 0.14 后可以删掉这份 vendored 依赖。
 
 ### 登录流程
 
@@ -385,6 +392,7 @@ MELO_DEMO_USER=1 MELO_SHOW_PLAYER=1 MELO_SCREENSHOT=/tmp/player.png cargo run -p
 - 播放采用「整首下载完成后开始播放」，长音频的首播等待时间受网络影响。
 - 需要有效的账号 Cookie；接口风控或服务端调整可能导致部分功能不可用。
 - 歌词、排行榜、歌单广场尚未实现。
+- 输入法只写入最终上屏文字：候选窗正常可用，但拼音 / 组字过程不会在输入框里内联显示。
 - 本地音乐文件夹目前每次启动都会重新扫描，超大曲库的加载时间取决于磁盘速度；
   封面也只给当前可见的歌曲行加载。
 - 下载固定使用当前选择的音质；下载内容只保存在本机，不会同步回网易云。

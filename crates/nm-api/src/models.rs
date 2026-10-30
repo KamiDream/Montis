@@ -25,38 +25,38 @@ where
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Artist {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Album {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
-    #[serde(default, rename = "picUrl")]
+    #[serde(default, rename = "picUrl", deserialize_with = "null_as_default")]
     pub pic_url: String,
 }
 
 /// 一首歌。搜索与歌单详情共用。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Song {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub ar: Vec<Artist>,
     #[serde(default)]
     pub al: Option<Album>,
     /// 时长（毫秒）。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub dt: u64,
     /// 0 免费 / 1 VIP / 4 购买专辑 / 8 低音质免费。
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub fee: i64,
     /// 本地文件路径（仅客户端使用，网络接口不会返回这个字段）。
     ///
@@ -100,24 +100,24 @@ impl Song {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Creator {
-    #[serde(default, rename = "userId")]
+    #[serde(default, rename = "userId", deserialize_with = "null_as_default")]
     pub user_id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub nickname: String,
 }
 
 /// 歌单摘要，用于侧边栏和卡片。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PlaylistSummary {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
-    #[serde(default, rename = "coverImgUrl")]
+    #[serde(default, rename = "coverImgUrl", deserialize_with = "null_as_default")]
     pub cover_img_url: String,
-    #[serde(default, rename = "trackCount")]
+    #[serde(default, rename = "trackCount", deserialize_with = "null_as_default")]
     pub track_count: u64,
-    #[serde(default, rename = "playCount")]
+    #[serde(default, rename = "playCount", deserialize_with = "null_as_default")]
     pub play_count: u64,
     #[serde(default)]
     pub creator: Option<Creator>,
@@ -125,7 +125,7 @@ pub struct PlaylistSummary {
     #[serde(default, deserialize_with = "bool_or_false")]
     pub subscribed: bool,
     /// 歌单类型：`5` 是账号的「我喜欢的音乐」。
-    #[serde(default, rename = "specialType")]
+    #[serde(default, rename = "specialType", deserialize_with = "null_as_default")]
     pub special_type: u32,
 }
 
@@ -139,22 +139,22 @@ impl PlaylistSummary {
 /// 剩下的要在 `trackIds` 里按顺序找到并另行批量获取。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TrackId {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: u64,
 }
 
 /// 歌单详情：摘要字段 + 简介 + 歌曲列表。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PlaylistDetail {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub name: String,
-    #[serde(default, rename = "coverImgUrl")]
+    #[serde(default, rename = "coverImgUrl", deserialize_with = "null_as_default")]
     pub cover_img_url: String,
-    #[serde(default, rename = "trackCount")]
+    #[serde(default, rename = "trackCount", deserialize_with = "null_as_default")]
     pub track_count: u64,
-    #[serde(default, rename = "playCount")]
+    #[serde(default, rename = "playCount", deserialize_with = "null_as_default")]
     pub play_count: u64,
     #[serde(default)]
     pub description: Option<String>,
@@ -162,10 +162,10 @@ pub struct PlaylistDetail {
     pub creator: Option<Creator>,
     #[serde(default, deserialize_with = "bool_or_false")]
     pub subscribed: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tracks: Vec<Song>,
     /// 歌单的完整曲目顺序；可能多于 `tracks`（详情接口只返回前 1000 首）。
-    #[serde(default, rename = "trackIds")]
+    #[serde(default, rename = "trackIds", deserialize_with = "null_as_default")]
     pub track_ids: Vec<TrackId>,
 }
 
@@ -485,6 +485,44 @@ mod tests {
         }))
         .expect("playlist");
         assert!(!playlist.subscribed);
+    }
+
+    #[test]
+    fn null_strings_inside_tracks_are_tolerated() {
+        // 真实接口：部分歌曲的歌手名 / 专辑名会返回 null。
+        let detail: PlaylistDetail = serde_json::from_value(json!({
+            "id": 18537065327u64,
+            "name": "橙光精选",
+            "coverImgUrl": null,
+            "description": null,
+            "trackCount": 1,
+            "tracks": [{
+                "id": 1,
+                "name": "歌",
+                "ar": [{ "id": 2, "name": null }],
+                "al": { "id": 3, "name": null, "picUrl": null },
+                "dt": 1000,
+                "fee": 0
+            }],
+            "trackIds": [{ "id": 1 }]
+        }))
+        .expect("playlist with null strings");
+
+        assert_eq!(detail.tracks[0].ar[0].name, "");
+        assert_eq!(detail.tracks[0].al.as_ref().expect("album").name, "");
+        assert!(detail.cover_img_url.is_empty());
+    }
+
+    #[test]
+    fn null_lists_are_empty() {
+        let detail: PlaylistDetail = serde_json::from_value(json!({
+            "id": 4,
+            "tracks": null,
+            "trackIds": null
+        }))
+        .expect("playlist");
+        assert!(detail.tracks.is_empty());
+        assert!(detail.track_ids.is_empty());
     }
 
     #[test]
