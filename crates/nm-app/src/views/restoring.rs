@@ -1,9 +1,9 @@
-use iced::widget::{column, container, horizontal_space, row, text, vertical_space};
+use iced::widget::{column, container, horizontal_space, row, vertical_space};
 use iced::{border, Alignment, Background, Color, Length, Padding};
 
 use crate::app::{App, Element, Message};
 use crate::theme;
-use crate::widgets::{self, PillKind};
+use crate::widgets::{self, text, PillKind};
 
 pub fn view(app: &App) -> Element<'_> {
     let failed = app.restore_error.is_some();

@@ -240,6 +240,29 @@ impl BilibiliClient {
         Ok(parse_folder_page(&body))
     }
 
+    /// 收藏夹列表接口不返回封面：用第一页第一条视频的封面代替。
+    /// 空收藏夹 / 无权限时返回空字符串，界面继续用首字占位。
+    pub async fn folder_cover(&self, media_id: u64) -> Result<String> {
+        let params = vec![
+            ("media_id".to_string(), media_id.to_string()),
+            ("pn".to_string(), "1".to_string()),
+            ("ps".to_string(), "1".to_string()),
+            ("keyword".to_string(), String::new()),
+            ("order".to_string(), "mtime".to_string()),
+            ("type".to_string(), "0".to_string()),
+            ("tid".to_string(), "0".to_string()),
+            ("platform".to_string(), "web".to_string()),
+        ];
+        let body = self.get_json(FAV_RESOURCES, &params, true).await?;
+        ensure_ok(&body)?;
+
+        Ok(body
+            .pointer("/data/medias/0/cover")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
+
     /// 取视频的纯音频流。优先请求 DASH（`fnval=16`），取码率最高的一条音轨。
     pub async fn audio(&self, bvid: &str, cid: u64) -> Result<BiliAudio> {
         if bvid.is_empty() || cid == 0 {
@@ -587,6 +610,17 @@ fn parse_folder_page(body: &Value) -> BiliFolderPage {
         .filter_map(|media| song_from_media(media, &title))
         .collect();
 
+    let cover = if cover.is_empty() {
+        // `info.cover` 经常是空的，退回到第一条视频的封面。
+        medias
+            .iter()
+            .find_map(|media| media.get("cover").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        cover
+    };
+
     BiliFolderPage {
         title,
         cover,
@@ -915,6 +949,40 @@ mod tests {
     }
 
     #[test]
+    fn folder_page_falls_back_to_first_media_cover() {
+        let body = json!({
+            "code": 0,
+            "data": {
+                "info": {
+                    "title": "默认收藏夹",
+                    "cover": "",
+                    "media_count": 2
+                },
+                "medias": [
+                    {
+                        "id": 1,
+                        "bvid": "BV1",
+                        "title": "一",
+                        "cover": "http://i0.hdslb.com/a.jpg",
+                        "ugc": { "first_cid": 9 }
+                    },
+                    {
+                        "id": 2,
+                        "bvid": "BV2",
+                        "title": "二",
+                        "cover": "http://i0.hdslb.com/b.jpg",
+                        "ugc": { "first_cid": 10 }
+                    }
+                ],
+                "has_more": false
+            }
+        });
+
+        let page = parse_folder_page(&body);
+        assert_eq!(page.cover, "http://i0.hdslb.com/a.jpg");
+    }
+
+    #[test]
     fn picks_highest_bitrate_audio() {
         let body = json!({
             "code": 0,
@@ -1004,5 +1072,18 @@ mod tests {
     async fn anonymous_nav_has_no_user() {
         let client = BilibiliClient::new();
         assert!(client.user().await.expect("nav").is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "需要访问 api.bilibili.com"]
+    async fn public_folder_cover_is_reachable() {
+        let client = BilibiliClient::new();
+        // 公开收藏夹（默认收藏夹），不需要登录 Cookie。
+        let cover = client.folder_cover(63_692_673).await.expect("folder cover");
+        assert!(cover.starts_with("http"), "封面地址异常：{cover}");
+
+        let bytes = client.fetch_bytes(&cover).await.expect("cover bytes");
+        assert!(bytes.len() > 512, "封面字节太少：{}", bytes.len());
+        println!("folder cover = {cover}, bytes = {}", bytes.len());
     }
 }

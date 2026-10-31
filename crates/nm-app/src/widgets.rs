@@ -4,7 +4,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, Widget};
 use iced::advanced::{overlay, renderer, Clipboard, Renderer as _, Shell};
 use iced::widget::svg::{self, Handle};
-use iced::widget::{button, container, image, mouse_area, row, text, vertical_space};
+use iced::widget::{button, container, image, mouse_area, row, vertical_space};
 use iced::{
     border, mouse, Alignment, Background, Color, ContentFit, Event, Length, Padding, Rectangle,
     Shadow, Size, Vector,
@@ -45,6 +45,15 @@ pub const ICON_DOWNLOADED: &[u8] = include_bytes!("../assets/downloaded.svg");
 pub const ICON_TRASH: &[u8] = include_bytes!("../assets/trash.svg");
 pub const ICON_FOLDER: &[u8] = include_bytes!("../assets/folder.svg");
 pub const ICON_BILIBILI: &[u8] = include_bytes!("../assets/bilibili.svg");
+
+/// 统一开启高级排版。
+///
+/// iced 的 `text()` 默认 `Shaping::Basic`，不做字体回退：字体里没有的字
+/// （emoji、部分箭头 / 符号）会直接画成方框。这里统一换成 `Advanced`，
+/// 缺字时交给 cosmic-text 从系统字体里挑。
+pub fn text<'a>(content: impl iced::widget::text::IntoFragment<'a>) -> iced::widget::Text<'a> {
+    iced::widget::text(content).shaping(iced::widget::text::Shaping::Advanced)
+}
 
 #[derive(Clone, Copy)]
 pub enum PillKind {

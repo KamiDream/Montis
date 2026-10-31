@@ -1,6 +1,6 @@
 use iced::widget::{
-    button, column, container, horizontal_space, image, mouse_area, row, scrollable, text,
-    text_input, vertical_space,
+    button, column, container, horizontal_space, image, mouse_area, row, scrollable, text_input,
+    vertical_space,
 };
 use iced::{border, mouse, Alignment, Background, ContentFit, Length, Padding};
 
@@ -11,7 +11,7 @@ use crate::audio_cache::{format_bytes, MB};
 use crate::theme;
 use crate::ui_settings::ANIMATION_PRESETS;
 use crate::views::scroll_window;
-use crate::widgets::{self, PillKind};
+use crate::widgets::{self, text, PillKind};
 
 pub fn view(app: &App) -> Element<'_> {
     // 歌单首页 ↔ 歌单详情页切换时，只让右侧内容区淡入，侧边栏保持不动。
@@ -1079,13 +1079,15 @@ fn search_page(app: &App) -> Element<'_> {
     } else if app.search.results.is_empty() {
         widgets::card(widgets::hint("没有找到相关歌曲，换个关键词试试。"))
     } else {
+        let more = ((app.search.offset as u64) < app.search.total).then_some(Message::SearchMore);
         song_list(
             app,
             &app.search.results,
             ScrollArea::Search,
             Message::PlaySearchTrack,
             Message::EnqueueSearchTrack,
-            search_footer(app),
+            more,
+            app.search.more_busy,
         )
     };
 
@@ -1143,6 +1145,7 @@ fn daily_page(app: &App) -> Element<'_> {
             Message::PlayDailyTrack,
             Message::EnqueueDailyTrack,
             None,
+            false,
         )
     };
 
@@ -1201,6 +1204,7 @@ fn fm_page(app: &App) -> Element<'_> {
             Message::PlayFmTrack,
             Message::EnqueueFmTrack,
             None,
+            false,
         )
     };
 
@@ -1259,20 +1263,43 @@ fn bili_page(app: &App) -> Element<'_> {
 }
 
 fn bili_folders(app: &App) -> Element<'_> {
-    let folders = &app.bili_state.folders;
+    let all = &app.bili_state.folders;
+    let hidden_count = all
+        .iter()
+        .filter(|folder| app.bili_session.is_folder_hidden(folder.id))
+        .count();
+    let folders: Vec<&BiliFolder> = all
+        .iter()
+        .filter(|folder| {
+            app.bili_state.show_hidden || !app.bili_session.is_folder_hidden(folder.id)
+        })
+        .collect();
+
     // 账号卡片已经在侧边栏展示，这里只放列表标题。
-    let head = row![
+    let mut head = row![
         widgets::section_title("我的收藏夹"),
         widgets::pill(format!("{} 个", folders.len()), PillKind::Muted),
-        horizontal_space(),
-        widgets::refresh_button(
-            app.bili_state.folders_busy,
-            app.phase,
-            Message::ReloadBiliFolders,
-        ),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
+
+    if hidden_count > 0 {
+        head = head.push(link(
+            if app.bili_state.show_hidden {
+                "收起已隐藏"
+            } else {
+                "显示已隐藏"
+            },
+            theme::DIM,
+            Message::ToggleShowHiddenBiliFolders,
+        ));
+    }
+
+    let head = head.push(horizontal_space()).push(widgets::refresh_button(
+        app.bili_state.folders_busy,
+        app.phase,
+        Message::ReloadBiliFolders,
+    ));
 
     let mut body = column![head].spacing(14);
 
@@ -1286,7 +1313,7 @@ fn bili_folders(app: &App) -> Element<'_> {
         ));
     }
 
-    let grid: Element<'_> = if app.bili_state.folders_busy && folders.is_empty() {
+    let grid: Element<'_> = if app.bili_state.folders_busy && all.is_empty() {
         widgets::card(
             row![
                 widgets::spinner(app.phase, 3.5, theme::ACCENT),
@@ -1296,12 +1323,18 @@ fn bili_folders(app: &App) -> Element<'_> {
             .align_y(Alignment::Center),
         )
     } else if folders.is_empty() {
-        widgets::card(widgets::hint(
-            "还没有收藏夹。先在 bilibili.com 收藏几个视频，再回来刷新。",
-        ))
+        if hidden_count > 0 {
+            widgets::card(widgets::hint(
+                "收藏夹都被隐藏了。点上方「显示已隐藏」可以看到并恢复。",
+            ))
+        } else {
+            widgets::card(widgets::hint(
+                "还没有收藏夹。先在 bilibili.com 收藏几个视频，再回来刷新。",
+            ))
+        }
     } else {
         let available = (app.viewport.width - 250.0 - 44.0 - 12.0).max(220.0);
-        let (columns, card_width) = grid_metrics(available, folders.len());
+        let (columns, card_width) = grid_metrics(available);
         let mut grid = column![].spacing(14.0);
         for chunk in folders.chunks(columns) {
             let mut cards = row![].spacing(14.0);
@@ -1414,29 +1447,68 @@ fn bili_avatar(app: &App, size: f32) -> Element<'_> {
 
 fn bili_folder_card<'a>(app: &'a App, folder: &'a BiliFolder, width: f32) -> Element<'a> {
     let cover_size = (width - 24.0).max(120.0);
+    let hidden = app.bili_session.is_folder_hidden(folder.id);
     let art = cover_with_badge(app, &folder.cover(300), cover_size, &folder.title);
+
+    let mut tags = row![
+        widgets::pill(format!("{} 个视频", folder.media_count), PillKind::Muted),
+        if folder.attr == 0 {
+            widgets::pill("公开", PillKind::Ok)
+        } else {
+            widgets::pill("私密", PillKind::Warn)
+        },
+    ]
+    .spacing(6);
+    if hidden {
+        tags = tags.push(widgets::pill("已隐藏", PillKind::Warn));
+    }
 
     let body = column![
         art,
         text(clip(&folder.title, 16)).size(13).color(theme::FG),
-        row![
-            widgets::pill(format!("{} 个视频", folder.media_count), PillKind::Muted),
-            if folder.attr == 0 {
-                widgets::pill("公开", PillKind::Ok)
-            } else {
-                widgets::pill("私密", PillKind::Warn)
-            },
-        ]
-        .spacing(6),
+        tags,
     ]
     .spacing(9);
 
-    button(body)
+    let card = button(body)
         .on_press(Message::OpenBiliFolder(folder.id))
         .width(Length::Fixed(width))
         .padding(12)
-        .style(theme::playlist_card)
-        .into()
+        .style(theme::playlist_card);
+
+    // 封面右上角的隐藏 / 恢复入口。放在 `stack` 顶层，点击它不会
+    // 穿透到下面的卡片按钮，其它位置仍然可以正常打开收藏夹。
+    let toggle = mouse_area(
+        container(
+            text(if hidden { "显示" } else { "隐藏" })
+                .size(9)
+                .color(iced::Color::WHITE),
+        )
+        .padding(Padding::from([3, 8]))
+        .style(|_| container::Style {
+            background: Some(Background::Color(iced::Color::from_rgba(
+                0.07, 0.09, 0.16, 0.62,
+            ))),
+            border: border::rounded(999.0),
+            ..container::Style::default()
+        }),
+    )
+    .on_press(Message::ToggleBiliFolderHidden(folder.id))
+    .interaction(mouse::Interaction::Pointer);
+
+    let overlay = container(toggle)
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(cover_size + 24.0))
+        .align_x(Alignment::End)
+        .align_y(Alignment::Start)
+        .padding(Padding {
+            top: 20.0,
+            right: 20.0,
+            bottom: 0.0,
+            left: 0.0,
+        });
+
+    iced::widget::stack![card, overlay].into()
 }
 
 /// 歌手页：头像 + 简介固定在上方，歌曲列表单独滚动。
@@ -1515,13 +1587,15 @@ fn artist_page(app: &App) -> Element<'_> {
     let body: Element<'_> = if state.songs.is_empty() {
         widgets::card(widgets::hint("暂时没有可播放的歌曲。"))
     } else {
+        let more = ((state.offset as u64) < state.total).then_some(Message::ArtistMore);
         song_list(
             app,
             &state.songs,
             ScrollArea::Artist,
             Message::PlayArtistTrack,
             Message::EnqueueArtistTrack,
-            artist_footer(app),
+            more,
+            state.more_busy,
         )
     };
 
@@ -1649,19 +1723,6 @@ fn artist_placeholder<'a>(name: &str, size: f32) -> Element<'a> {
         .into()
 }
 
-fn artist_footer(app: &App) -> Option<Element<'_>> {
-    let state = app.artist.as_ref()?;
-    if state.offset as u64 >= state.total {
-        return None;
-    }
-    Some(load_more_footer(
-        state.more_busy,
-        app.phase,
-        state.total.saturating_sub(state.songs.len() as u64),
-        Message::ArtistMore,
-    ))
-}
-
 /// 「搜索结果」标题行：数量与清空按钮始终可见，不随结果列表滚走。
 fn search_results_head(app: &App) -> Element<'_> {
     let loaded = app.search.results.len() as u64;
@@ -1682,52 +1743,15 @@ fn search_results_head(app: &App) -> Element<'_> {
     .into()
 }
 
-/// 搜索结果底部：还有更多时显示「加载更多」。
-fn search_footer(app: &App) -> Option<Element<'_>> {
-    let loaded = app.search.results.len() as u64;
-    if app.search.offset as u64 >= app.search.total {
-        return None;
-    }
-    Some(load_more_footer(
-        app.search.more_busy,
-        app.phase,
-        app.search.total.saturating_sub(loaded),
-        Message::SearchMore,
-    ))
-}
+/// 滚动到距底部多少像素内就自动翻页。
+const AUTO_LOAD_MARGIN: f32 = 160.0;
 
-/// 列表底部的「加载更多」：搜索结果与歌手页共用。
-fn load_more_footer(busy: bool, phase: f32, remaining: u64, message: Message) -> Element<'static> {
-    let content: Element<'static> = if busy {
-        row![
-            widgets::spinner(phase, 3.0, theme::ACCENT),
-            widgets::hint("正在加载更多…"),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        button(text("加载更多").size(12).color(theme::ACCENT_DARK))
-            .on_press(message)
-            .padding(Padding::from([8, 24]))
-            .style(theme::soft_accent_button(false))
-            .into()
-    };
-
-    container(
-        column![content, widgets::hint(format!("还有 {remaining} 首未显示")),]
-            .spacing(8)
-            .align_x(Alignment::Center),
-    )
-    .width(Length::Fill)
-    .padding(Padding {
-        top: 16.0,
-        right: 0.0,
-        bottom: 8.0,
-        left: 0.0,
-    })
-    .align_x(Alignment::Center)
-    .into()
+/// 滚动位置是否已经接近底部。
+fn near_bottom(viewport: scrollable::Viewport) -> bool {
+    let offset = viewport.absolute_offset().y;
+    let visible = viewport.bounds().height;
+    let content = viewport.content_bounds().height;
+    offset + visible + AUTO_LOAD_MARGIN >= content
 }
 
 /// 歌曲列表卡片：表头固定，行高一致，整块滚动（每日推荐 / 私人FM / 搜索结果共用）。
@@ -1737,7 +1761,8 @@ fn song_list<'a>(
     area: ScrollArea,
     on_press: fn(usize) -> Message,
     on_enqueue: fn(usize) -> Message,
-    footer: Option<Element<'a>>,
+    more: Option<Message>,
+    more_busy: bool,
 ) -> Element<'a> {
     let mut rows = column![].spacing(0);
     for (index, song) in songs.iter().enumerate() {
@@ -1752,9 +1777,9 @@ fn song_list<'a>(
         );
     }
 
-    // 翻页按钮跟在最后一行后面，只有滚到底部才看得到。
-    if let Some(footer) = footer {
-        rows = rows.push(footer);
+    // 没有按钮：滚到底部自动加载下一页，加载中只在底部显示一条提示。
+    if more_busy {
+        rows = rows.push(loading_row(app.phase));
     }
 
     let list = scrollable(container(rows).padding(Padding {
@@ -1764,7 +1789,10 @@ fn song_list<'a>(
         left: 18.0,
     }))
     .height(Length::Fill)
-    .on_scroll(move |_| Message::Scrolled(area))
+    .on_scroll(move |viewport| match &more {
+        Some(message) if near_bottom(viewport) => message.clone(),
+        _ => Message::Scrolled(area),
+    })
     .style(theme::scrollable_auto(app.scroll_opacity(area)));
 
     container(column![
@@ -1775,6 +1803,22 @@ fn song_list<'a>(
     .width(Length::Fill)
     .height(Length::Fill)
     .style(theme::card)
+    .into()
+}
+
+/// 自动翻页时贴在列表底部的加载提示（没有按钮）。
+fn loading_row(phase: f32) -> Element<'static> {
+    container(
+        row![
+            widgets::spinner(phase, 3.0, theme::ACCENT),
+            widgets::hint("正在加载更多…"),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([14, 0]))
+    .align_x(Alignment::Center)
     .into()
 }
 
@@ -1833,7 +1877,7 @@ fn library_grid(app: &App) -> Element<'_> {
     // 按窗口宽度计算列数，卡片均分整行，宽屏（含全屏）不再留出大片空白。
     // 侧边栏 250 + 主区左右 padding 44 + 滚动条余量。
     let available = (app.viewport.width - 250.0 - 44.0 - 12.0).max(220.0);
-    let (columns, card_width) = grid_metrics(available, items.len());
+    let (columns, card_width) = grid_metrics(available);
 
     let mut grid = column![].spacing(14.0);
     for chunk in items.chunks(columns) {
@@ -1895,12 +1939,14 @@ fn library_grid(app: &App) -> Element<'_> {
 }
 
 /// 根据可用宽度算列数，并把剩余宽度均分给卡片。
-fn grid_metrics(available: f32, count: usize) -> (usize, f32) {
+///
+/// 列数只看宽度，不随卡片数量缩小：只有一两张时也保持正常大小，
+/// 不会被拉成整行宽的大图。
+fn grid_metrics(available: f32) -> (usize, f32) {
     const SPACING: f32 = 14.0;
     const MIN_CARD: f32 = 210.0;
 
-    let count = count.max(1);
-    let columns = (((available + SPACING) / (MIN_CARD + SPACING)).floor() as usize).clamp(1, count);
+    let columns = (((available + SPACING) / (MIN_CARD + SPACING)).floor() as usize).max(1);
     let card_width = ((available - SPACING * (columns - 1) as f32) / columns as f32).max(MIN_CARD);
 
     (columns, card_width)
@@ -2299,6 +2345,36 @@ fn list_header<'a>(content: Element<'a>) -> Element<'a> {
 pub(crate) const TRACK_ROW_HEIGHT: f32 = 51.0;
 /// 虚拟化时在视口上下额外保留的行数，减少快速滚动时的空白。
 pub(crate) const TRACK_OVERSCAN: usize = 6;
+/// 歌单列表的滚动容器 ID：搜索关键词变化时用它把列表滚回顶部。
+pub(crate) const PLAYLIST_SCROLL_ID: &str = "playlist-tracks";
+
+/// 歌单内搜索：歌名 / 歌手 / 专辑任意一项包含关键词（关键词已小写化）。
+fn song_matches(song: &Song, needle: &str) -> bool {
+    song.name.to_lowercase().contains(needle)
+        || song.artist_names().to_lowercase().contains(needle)
+        || song.album_name().to_lowercase().contains(needle)
+}
+
+/// 当前搜索条件下命中的原始下标；关键词为空时返回 `None`（表示全部）。
+pub(crate) fn filtered_track_indices(
+    state: &PlaylistState,
+    detail: &PlaylistDetail,
+) -> Option<Vec<usize>> {
+    let keyword = state.search.trim().to_lowercase();
+    if keyword.is_empty() {
+        return None;
+    }
+
+    Some(
+        detail
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, song)| song_matches(song, &keyword))
+            .map(|(index, _)| index)
+            .collect(),
+    )
+}
 
 /// 歌单歌曲列表：只渲染可见行，几千首也不卡。
 fn track_list<'a>(
@@ -2306,7 +2382,12 @@ fn track_list<'a>(
     state: &'a PlaylistState,
     detail: &'a PlaylistDetail,
 ) -> Element<'a> {
-    let total = detail.tracks.len();
+    // 歌单内搜索：关键词为空时展示全部；有词时只保留歌名 / 歌手 /
+    // 专辑命中的行，但仍用原始下标去播放与入队。
+    let keyword = state.search.trim().to_lowercase();
+    let filtered = filtered_track_indices(state, detail);
+    let total = filtered.as_ref().map_or(detail.tracks.len(), Vec::len);
+
     let view_height = app.viewport.height.max(TRACK_ROW_HEIGHT);
     let (first, last, top, bottom) = scroll_window::visible_window(
         total,
@@ -2322,7 +2403,10 @@ fn track_list<'a>(
     if top > 0.0 {
         rows = rows.push(vertical_space().height(top));
     }
-    for index in first..last {
+    for position in first..last {
+        let index = filtered
+            .as_ref()
+            .map_or(position, |indices| indices[position]);
         let song = &detail.tracks[index];
         rows = rows.push(
             container(column![
@@ -2343,31 +2427,66 @@ fn track_list<'a>(
     if bottom > 0.0 {
         rows = rows.push(vertical_space().height(bottom));
     }
-    // 哔哩哔哩收藏夹接口按页返回，滚到底部可以继续加载下一页。
-    if state.bilibili && state.bili_has_more {
-        rows = rows.push(bili_more_row(state.bili_busy, app.phase));
+    // 收藏夹加载新一页时，只在底部显示一条提示；翻页由滚到底部自动触发。
+    if state.bilibili && state.bili_busy {
+        rows = rows.push(loading_row(app.phase));
     }
 
     // 列标题固定在滚动区外，列表滚动时依然能对照专辑与时长。
     let header = list_header(track_header(state.local_downloads));
 
-    let list = scrollable(container(rows).padding(Padding {
-        top: 4.0,
-        right: 18.0,
-        bottom: 16.0,
-        left: 18.0,
-    }))
-    .height(Length::Fill)
-    .on_scroll(|viewport| Message::PlaylistScrolled(viewport.absolute_offset().y))
-    .style(theme::scrollable_auto(
-        app.scroll_opacity(ScrollArea::TrackList),
-    ));
+    let bili_more = state.bilibili && state.bili_has_more && !state.bili_busy;
+    let list: Element<'a> = if total == 0 {
+        let loading = state.filling || state.bili_busy;
+        let message = if !keyword.is_empty() {
+            if loading {
+                "正在加载剩余歌曲，搜索结果稍后更新…"
+            } else {
+                "没有在这个歌单里找到匹配的歌曲。"
+            }
+        } else {
+            "这个歌单还没有歌曲。"
+        };
+        container(widgets::hint(message))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    } else {
+        scrollable(container(rows).padding(Padding {
+            top: 4.0,
+            right: 18.0,
+            bottom: 16.0,
+            left: 18.0,
+        }))
+        .id(iced::widget::scrollable::Id::new(PLAYLIST_SCROLL_ID))
+        .height(Length::Fill)
+        .on_scroll(move |viewport| {
+            if bili_more && near_bottom(viewport) {
+                Message::LoadMoreBiliFolder
+            } else {
+                Message::PlaylistScrolled(viewport.absolute_offset().y)
+            }
+        })
+        .style(theme::scrollable_auto(
+            app.scroll_opacity(ScrollArea::TrackList),
+        ))
+        .into()
+    };
+
+    let search = playlist_search_bar(app, state, detail, total);
 
     // 滚动放在卡片内部：卡片本身固定，圆角不会随内容滚动被裁成直角。
-    let card = container(column![header, widgets::soft_rule(), list])
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(theme::card);
+    let card = container(column![
+        header,
+        container(search).padding(Padding::from([10, 18])),
+        widgets::soft_rule(),
+        list
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(theme::card);
 
     let total_count = detail.track_count.max(detail.tracks.len() as u64);
     let mut content = column![card].spacing(8).height(Length::Fill);
@@ -2394,29 +2513,63 @@ fn track_list<'a>(
     content.into()
 }
 
-/// 收藏夹列表底部的「加载更多」：B 站接口每页 20 条。
-fn bili_more_row(busy: bool, phase: f32) -> Element<'static> {
-    let content: Element<'static> = if busy {
-        row![
-            widgets::spinner(phase, 3.0, theme::ACCENT),
-            widgets::hint("正在加载更多…"),
-        ]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        button(text("加载更多").size(12).color(theme::ACCENT_DARK))
-            .on_press(Message::LoadMoreBiliFolder)
-            .padding(Padding::from([9, 18]))
-            .style(theme::soft_accent_button(false))
-            .into()
-    };
+/// 歌单内搜索栏：输入即过滤，右侧按钮只负责重新拉取未加载的歌曲。
+fn playlist_search_bar<'a>(
+    app: &'a App,
+    state: &'a PlaylistState,
+    detail: &'a PlaylistDetail,
+    matched: usize,
+) -> Element<'a> {
+    let keyword = !state.search.trim().is_empty();
 
-    container(content)
+    let input = text_input("在歌单内搜索歌曲、歌手或专辑…", state.search.as_str())
+        .on_input(Message::PlaylistSearchChanged)
+        .on_submit(Message::PlaylistSearchSubmit)
+        .padding(9)
+        .size(12)
         .width(Length::Fill)
-        .align_x(Alignment::Center)
-        .padding(Padding::from([12, 0]))
-        .into()
+        .style(theme::input);
+
+    let submit = button(widgets::svg_icon(
+        widgets::ICON_SEARCH,
+        14.0,
+        iced::Color::WHITE,
+    ))
+    .on_press(Message::PlaylistSearchSubmit)
+    .padding(Padding::from([9, 12]))
+    .style(theme::primary);
+
+    let mut bar = row![input, submit].spacing(8).align_y(Alignment::Center);
+
+    if keyword {
+        bar = bar.push(widgets::pill(format!("{matched} 首"), PillKind::Muted));
+        bar = bar.push(
+            button(text("清除").size(11).color(theme::DIM))
+                .on_press(Message::PlaylistSearchClear)
+                .padding(Padding::from([8, 10]))
+                .style(theme::ghost),
+        );
+    }
+
+    let mut content = column![bar].spacing(6);
+    if keyword {
+        let loading = state.filling || state.bili_busy;
+        let note: Element<'a> = if loading {
+            row![
+                widgets::spinner(app.phase, 2.5, theme::ACCENT),
+                widgets::hint("正在加载剩余歌曲，结果可能会增加…"),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        } else {
+            let total = detail.track_count.max(detail.tracks.len() as u64);
+            widgets::hint(format!("只在当前歌单的 {total} 首歌曲中查找"))
+        };
+        content = content.push(note);
+    }
+
+    content.into()
 }
 
 fn track_header<'a>(downloads: bool) -> Element<'a> {
@@ -2870,18 +3023,20 @@ mod tests {
 
     #[test]
     fn columns_grow_with_window_width() {
-        assert_eq!(grid_metrics(300.0, 16).0, 1);
-        assert_eq!(grid_metrics(674.0, 16).0, 3);
-        assert_eq!(grid_metrics(1394.0, 16).0, 6);
-        assert_eq!(grid_metrics(1614.0, 16).0, 7);
-        // 列数不会超过歌单数量。
-        assert_eq!(grid_metrics(2000.0, 2).0, 2);
+        assert_eq!(grid_metrics(300.0).0, 1);
+        assert_eq!(grid_metrics(674.0).0, 3);
+        assert_eq!(grid_metrics(1394.0).0, 6);
+        assert_eq!(grid_metrics(1614.0).0, 7);
+        // 列数只看宽度：只有一两张卡片时也保持正常尺寸。
+        let (columns, card) = grid_metrics(2000.0);
+        assert_eq!(columns, 8);
+        assert!(card < 300.0, "card too wide: {card}");
     }
 
     #[test]
     fn cards_fill_the_row_without_overflow() {
         for available in [674.0_f32, 1394.0, 1614.0] {
-            let (columns, card) = grid_metrics(available, 16);
+            let (columns, card) = grid_metrics(available);
             let used = card * columns as f32 + 14.0 * (columns as f32 - 1.0);
             assert!(
                 used <= available + 0.5,

@@ -1,11 +1,9 @@
-use iced::widget::{
-    button, column, container, horizontal_space, row, text, text_input, vertical_space,
-};
+use iced::widget::{button, column, container, horizontal_space, row, text_input, vertical_space};
 use iced::{border, Alignment, Background, Color, Length, Padding};
 
 use crate::app::{App, Element, Message};
 use crate::theme;
-use crate::widgets::{self, PillKind};
+use crate::widgets::{self, text, PillKind};
 
 /// 哔哩哔哩品牌粉：步骤序号、提示卡描边都用它。
 fn bili_pink() -> Color {

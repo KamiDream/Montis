@@ -3,7 +3,7 @@
 use iced::alignment;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Text};
 use iced::widget::{
-    button, column, container, horizontal_space, image, mouse_area, row, scrollable, text,
+    button, column, container, horizontal_space, image, mouse_area, row, scrollable,
 };
 use iced::{
     border, mouse, Alignment, Background, Color, ContentFit, Length, Padding, Pixels, Point,
@@ -16,7 +16,7 @@ use crate::app::{App, AudioQuality, Element, Message, RepeatMode, ScrollArea};
 use crate::theme;
 use crate::visualizer::{Palette, VisualField, VisualToggle, VisualizerConfig};
 use crate::widgets::{
-    self, ICON_BACK, ICON_EXPAND, ICON_NEXT, ICON_PAUSE, ICON_PLAY, ICON_PREV, ICON_QUEUE,
+    self, text, ICON_BACK, ICON_EXPAND, ICON_NEXT, ICON_PAUSE, ICON_PLAY, ICON_PREV, ICON_QUEUE,
     ICON_SHUFFLE, ICON_VOLUME, ICON_VOLUME_MUTE,
 };
 

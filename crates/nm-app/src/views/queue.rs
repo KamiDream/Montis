@@ -1,7 +1,7 @@
 //! 播放队列面板：查看当前队列、跳播、移除与清空。
 
 use iced::widget::{
-    column, container, horizontal_space, image, mouse_area, row, scrollable, text, vertical_space,
+    column, container, horizontal_space, image, mouse_area, row, scrollable, vertical_space,
 };
 use iced::{border, mouse, Alignment, Background, ContentFit, Length, Padding};
 
@@ -9,7 +9,7 @@ use nm_api::Song;
 
 use crate::app::{App, Element, Message, RepeatMode, ScrollArea};
 use crate::theme;
-use crate::widgets;
+use crate::widgets::{self, text};
 
 /// 单行高度：36px 封面 + 上下各 7px 内边距，另留 2px 行间距。
 pub(crate) const ROW_HEIGHT: f32 = 52.0;

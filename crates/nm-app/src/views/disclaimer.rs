@@ -2,10 +2,11 @@
 //!
 //! 确认状态保存在 `settings.json`，之后不再弹出。
 
-use iced::widget::{button, column, container, horizontal_space, mouse_area, row, text};
+use iced::widget::{button, column, container, horizontal_space, mouse_area, row};
 use iced::{border, Alignment, Background, Length, Padding};
 
 use crate::app::{Element, Message};
+use crate::widgets::text;
 use crate::{theme, widgets};
 
 const POINTS: [(&str, &str); 6] = [

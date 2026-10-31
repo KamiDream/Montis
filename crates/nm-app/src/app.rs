@@ -438,6 +438,8 @@ pub(crate) struct PlaylistState {
     pub(crate) bili_has_more: bool,
     /// 正在加载哔哩哔哩收藏夹的下一页。
     pub(crate) bili_busy: bool,
+    /// 歌单内搜索关键词（空 = 不过滤）。
+    pub(crate) search: String,
 }
 
 impl PlaylistState {
@@ -451,9 +453,10 @@ impl PlaylistState {
             local_liked: false,
             local_downloads: false,
             bilibili: true,
-            bili_page: 1,
+            bili_page: 0,
             bili_has_more: false,
             bili_busy: false,
+            search: String::new(),
         }
     }
 }
@@ -467,6 +470,8 @@ pub(crate) struct BilibiliState {
     pub(crate) folders: Vec<BiliFolder>,
     pub(crate) folders_busy: bool,
     pub(crate) folders_error: Option<String>,
+    /// 收藏夹网格是否显示被隐藏的收藏夹。
+    pub(crate) show_hidden: bool,
 }
 
 /// 播放器状态。音频设备与解码在 `nm_audio::Engine` 的专用线程里。
@@ -652,6 +657,10 @@ pub enum Message {
     },
     /// 歌单歌曲列表滚动偏移（虚拟化渲染 + 按需加载封面）。
     PlaylistScrolled(f32),
+    /// 歌单内搜索：输入变化 / 提交 / 清除关键词。
+    PlaylistSearchChanged(String),
+    PlaylistSearchSubmit,
+    PlaylistSearchClear,
     /// 只用来让滚动条重新出现：不关心偏移的区域用它上报滚动。
     Scrolled(ScrollArea),
     ClosePlaylist,
@@ -709,6 +718,15 @@ pub enum Message {
     BiliConnect,
     BiliConnected(Result<BiliUser, String>),
     BiliFoldersLoaded(Result<Vec<BiliFolder>, String>),
+    /// 收藏夹列表不返回封面：单独拉到的第一页视频封面。
+    BiliFolderCover {
+        id: u64,
+        cover: String,
+    },
+    /// 隐藏 / 取消隐藏某个收藏夹（设备级偏好，写入 bilibili.json）。
+    ToggleBiliFolderHidden(u64),
+    /// 在网格里显示 / 收起被隐藏的收藏夹。
+    ToggleShowHiddenBiliFolders,
     ReloadBiliFolders,
     OpenBiliFolder(u64),
     BiliFolderLoaded {
@@ -1289,6 +1307,7 @@ impl App {
                         bili_page: 0,
                         bili_has_more: false,
                         bili_busy: false,
+                        search: String::new(),
                     });
                 }
                 Ok("liked") => {
@@ -1807,26 +1826,40 @@ impl App {
                         .tracks
                         .extend(songs.into_iter().filter(|song| !known.contains(&song.id)));
                 }
-                Task::none()
+                // 补齐的歌曲可能正好落在当前搜索结果里，顺手把可见行的封面拉下来。
+                let offset = self.playlist_scroll;
+                self.ensure_playlist_covers(offset)
             }
             Message::PlaylistScrolled(offset) => {
                 self.touch_scroll(ScrollArea::TrackList);
                 self.playlist_scroll = offset;
-                let Some(detail) = self
-                    .playlist
-                    .as_ref()
-                    .and_then(|state| state.detail.as_ref())
-                else {
-                    return Task::none();
-                };
-                // 只加载滚到眼前的封面，免得大歌单一次性抓上千张图。
-                let (first, last) =
-                    playlist_window(self.viewport.height, offset, detail.tracks.len());
-                let covers = detail.tracks[first..last]
-                    .iter()
-                    .map(|song| song.cover(96))
-                    .collect();
-                self.ensure_covers(covers)
+                self.ensure_playlist_covers(offset)
+            }
+            Message::PlaylistSearchChanged(value) => {
+                if let Some(state) = &mut self.playlist {
+                    state.search = value;
+                }
+                self.playlist_scroll = 0.0;
+                Task::batch([
+                    self.ensure_playlist_search_coverage(),
+                    self.ensure_playlist_covers(0.0),
+                    scroll_playlist_to_top(),
+                ])
+            }
+            Message::PlaylistSearchSubmit => {
+                self.playlist_scroll = 0.0;
+                Task::batch([
+                    self.ensure_playlist_search_coverage(),
+                    self.ensure_playlist_covers(0.0),
+                    scroll_playlist_to_top(),
+                ])
+            }
+            Message::PlaylistSearchClear => {
+                if let Some(state) = &mut self.playlist {
+                    state.search.clear();
+                }
+                self.playlist_scroll = 0.0;
+                Task::batch([self.ensure_playlist_covers(0.0), scroll_playlist_to_top()])
             }
             Message::ClosePlaylist => {
                 self.playlist = None;
@@ -2363,14 +2396,54 @@ impl App {
                     Ok(folders) => {
                         self.bili_state.folders_error = None;
                         let covers = folders.iter().map(|folder| folder.cover(300)).collect();
+                        let mut tasks = vec![self.ensure_covers(covers)];
+
+                        // 收藏夹列表接口不返回封面：为空时去拉第一页的第一条视频。
+                        for folder in &folders {
+                            if folder.cover.is_empty() && folder.media_count > 0 {
+                                let id = folder.id;
+                                tasks.push(Task::perform(
+                                    fetch_bili_folder_cover(self.bili.clone(), id),
+                                    move |cover| Message::BiliFolderCover { id, cover },
+                                ));
+                            }
+                        }
+
                         self.bili_state.folders = folders;
-                        self.ensure_covers(covers)
+                        Task::batch(tasks)
                     }
                     Err(error) => {
                         self.bili_state.folders_error = Some(error);
                         Task::none()
                     }
                 }
+            }
+            Message::BiliFolderCover { id, cover } => {
+                if cover.is_empty() {
+                    return Task::none();
+                }
+                let Some(folder) = self
+                    .bili_state
+                    .folders
+                    .iter_mut()
+                    .find(|folder| folder.id == id)
+                else {
+                    return Task::none();
+                };
+                folder.cover = cover.clone();
+                let url = nm_api::sized_cover(&cover, 300);
+                self.ensure_covers(vec![url])
+            }
+            Message::ToggleBiliFolderHidden(id) => {
+                self.bili_session.toggle_folder_hidden(id);
+                if let Err(error) = self.bili_session.save(&self.paths.bilibili_file()) {
+                    self.storage_error = Some(error);
+                }
+                Task::none()
+            }
+            Message::ToggleShowHiddenBiliFolders => {
+                self.bili_state.show_hidden = !self.bili_state.show_hidden;
+                Task::none()
             }
             Message::ReloadBiliFolders => {
                 // 手动刷新时允许重试上一次失败 / 仍在进行中的请求。
@@ -2388,7 +2461,28 @@ impl App {
                 match result {
                     Ok(page_data) => {
                         let covers = apply_bili_page(state, id, page, page_data);
-                        self.ensure_covers(covers)
+                        // 窗口很高时一页可能撑不满一屏，滚不动就永远触发不了自动翻页；
+                        // 正在搜索时也必须把所有页都取完，结果才能覆盖未加载的歌曲。
+                        // 这里直接继续取下一页，直到填满 / 搜完或没有更多。
+                        let searching = !state.search.trim().is_empty();
+                        let need_more = state.bili_has_more
+                            && (searching
+                                || state
+                                    .detail
+                                    .as_ref()
+                                    .map_or(0, |detail| detail.tracks.len())
+                                    as f32
+                                    * views::home::TRACK_ROW_HEIGHT
+                                    < self.viewport.height - 220.0);
+                        let covers_task = self.ensure_covers(covers);
+                        if need_more {
+                            if let Some(state) = &mut self.playlist {
+                                state.bili_busy = true;
+                            }
+                            Task::batch([covers_task, self.load_bili_folder(id, page + 1)])
+                        } else {
+                            covers_task
+                        }
                     }
                     Err(error) => {
                         state.bili_busy = false;
@@ -2994,7 +3088,7 @@ impl App {
         )
     }
 
-    /// 加载搜索结果的下一页：滚到列表底部时由「加载更多」触发。
+    /// 加载搜索结果的下一页：滚到列表底部时自动触发。
     fn search_more(&mut self) -> Task<Message> {
         let keyword = self.search.query.trim().to_string();
         if self.demo
@@ -3015,6 +3109,70 @@ impl App {
             ),
             Message::SearchMoreLoaded,
         )
+    }
+
+    /// 歌单内搜索要覆盖「还没加载」的歌曲：网易云补齐 `track_ids` 里缺失的歌曲，
+    /// 哔哩哔哩继续翻页，直到没有下一页。
+    fn ensure_playlist_search_coverage(&mut self) -> Task<Message> {
+        let Some(state) = &mut self.playlist else {
+            return Task::none();
+        };
+
+        if state.bilibili {
+            if state.bili_has_more && !state.bili_busy {
+                state.bili_busy = true;
+                let id = state.id;
+                let page = state.bili_page + 1;
+                return self.load_bili_folder(id, page);
+            }
+            return Task::none();
+        }
+
+        if state.local_liked || state.local_downloads || state.filling {
+            return Task::none();
+        }
+
+        let Some(detail) = &state.detail else {
+            return Task::none();
+        };
+        let missing = detail.missing_track_ids();
+        if missing.is_empty() {
+            return Task::none();
+        }
+
+        state.filling = true;
+        let id = state.id;
+        Task::perform(
+            fill_playlist_tracks(self.client.clone(), missing),
+            move |result| Message::PlaylistTracksFilled { id, result },
+        )
+    }
+
+    /// 确保当前可见（经搜索过滤后的）歌曲封面已请求。
+    /// 过滤后原来的行号会变，不能再用未过滤的窗口去猜。
+    fn ensure_playlist_covers(&mut self, offset: f32) -> Task<Message> {
+        let covers = {
+            let Some(state) = &self.playlist else {
+                return Task::none();
+            };
+            let Some(detail) = &state.detail else {
+                return Task::none();
+            };
+
+            let filtered = views::home::filtered_track_indices(state, detail);
+            let total = filtered.as_ref().map_or(detail.tracks.len(), Vec::len);
+            let (first, last) = playlist_window(self.viewport.height, offset, total);
+            (first..last)
+                .map(|position| {
+                    let index = filtered
+                        .as_ref()
+                        .map_or(position, |indices| indices[position]);
+                    detail.tracks[index].cover(96)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        self.ensure_covers(covers)
     }
 
     /// 拉取每日推荐；演示模式直接用示例歌曲。
@@ -3090,7 +3248,7 @@ impl App {
         })
     }
 
-    /// 歌手页的「加载更多」。
+    /// 歌手页滚到底部时自动加载更多。
     fn artist_more(&mut self) -> Task<Message> {
         let Some(state) = &self.artist else {
             return Task::none();
@@ -3242,6 +3400,7 @@ impl App {
             bili_page: 0,
             bili_has_more: false,
             bili_busy: false,
+            search: String::new(),
         });
         self.playlist_scroll = 0.0;
         self.settings_page = false;
@@ -3470,6 +3629,7 @@ impl App {
             bili_page: 0,
             bili_has_more: false,
             bili_busy: false,
+            search: String::new(),
         });
         self.playlist_scroll = 0.0;
         self.settings_page = false;
@@ -3905,6 +4065,7 @@ impl App {
             bili_page: 0,
             bili_has_more: false,
             bili_busy: false,
+            search: String::new(),
         });
         self.playlist_scroll = 0.0;
         self.settings_page = false;
@@ -5261,6 +5422,11 @@ async fn fetch_bili_folders(client: BilibiliClient, mid: u64) -> Result<Vec<Bili
     client.folders(mid).await.map_err(|error| error.to_string())
 }
 
+/// 收藏夹列表不返回封面，单独取第一页第一条视频的封面；失败时返回空串。
+async fn fetch_bili_folder_cover(client: BilibiliClient, id: u64) -> String {
+    client.folder_cover(id).await.unwrap_or_default()
+}
+
 async fn fetch_bili_folder(
     client: BilibiliClient,
     id: u64,
@@ -5361,6 +5527,14 @@ fn playlist_window(viewport_height: f32, offset: f32, total: usize) -> (usize, u
         views::home::TRACK_OVERSCAN,
     );
     (first, last)
+}
+
+/// 歌单内搜索关键词变化后，把歌单列表滚回顶部。
+fn scroll_playlist_to_top() -> Task<Message> {
+    iced::widget::scrollable::scroll_to(
+        iced::widget::scrollable::Id::new(views::home::PLAYLIST_SCROLL_ID),
+        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y: 0.0 },
+    )
 }
 
 /// 从本地缓存读封面并裁好；缓存里没有时返回错误（等网络刷新）。
@@ -5562,6 +5736,7 @@ fn demo_songs() -> Vec<Song> {
 
 /// 显式加载系统中文字体。iced 的字体枚举在部分 Linux 环境下不可靠，
 /// 直接指定字体文件能保证中文标签不会变成方框。
+/// 缺字（emoji、符号）的回退由 `widgets::text` 的 `Shaping::Advanced` 负责。
 fn system_cjk_font() -> (Font, Vec<Cow<'static, [u8]>>) {
     const CANDIDATES: &[(&str, &str)] = &[
         (

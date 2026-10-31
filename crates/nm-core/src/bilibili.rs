@@ -22,6 +22,10 @@ pub struct BilibiliSession {
     /// 头像地址。
     #[serde(default)]
     pub face: String,
+    /// 用户在收藏夹网格里隐藏的收藏夹 ID。
+    /// 属于设备级偏好，退出登录后仍然保留。
+    #[serde(default)]
+    pub hidden_folders: Vec<u64>,
 }
 
 impl BilibiliSession {
@@ -82,6 +86,21 @@ impl BilibiliSession {
         cookies::cookie_header(&self.cookies)
     }
 
+    pub fn is_folder_hidden(&self, id: u64) -> bool {
+        self.hidden_folders.contains(&id)
+    }
+
+    /// 切换收藏夹的隐藏状态，返回切换后是否处于隐藏状态。
+    pub fn toggle_folder_hidden(&mut self, id: u64) -> bool {
+        if let Some(index) = self.hidden_folders.iter().position(|item| *item == id) {
+            self.hidden_folders.remove(index);
+            false
+        } else {
+            self.hidden_folders.push(id);
+            true
+        }
+    }
+
     pub fn clear(&mut self) {
         self.cookies.clear();
         self.mid = 0;
@@ -102,6 +121,7 @@ mod tests {
             .insert("SESSDATA".to_string(), "token".to_string());
         session.mid = 42;
         session.name = "听歌的人".to_string();
+        session.hidden_folders.push(998877);
 
         let directory =
             std::env::temp_dir().join(format!("montis-bili-session-{}", std::process::id()));
@@ -113,6 +133,8 @@ mod tests {
         assert!(loaded.is_logged_in());
         assert_eq!(loaded.mid, 42);
         assert_eq!(loaded.name, "听歌的人");
+        assert!(loaded.is_folder_hidden(998877));
+        assert!(!loaded.is_folder_hidden(1));
 
         let _ = std::fs::remove_dir_all(directory);
     }
