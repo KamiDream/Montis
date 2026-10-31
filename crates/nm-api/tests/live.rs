@@ -80,6 +80,28 @@ async fn verify_qr_endpoint_is_reachable() {
 
 #[tokio::test]
 #[ignore = "需要访问 music.163.com"]
+async fn song_lyric_roundtrip() {
+    let client = NeteaseClient::new();
+    let lyrics = client.song_lyric(186016).await.expect("获取歌词");
+    assert!(!lyrics.is_empty(), "晴天应当有歌词");
+    assert!(
+        lyrics
+            .active_index(std::time::Duration::from_secs(60))
+            .is_some(),
+        "一分钟处应当已经进入正文"
+    );
+
+    let first = &lyrics.lines[0];
+    println!(
+        "歌词 {} 行，第一行 {}ms：{}",
+        lyrics.lines.len(),
+        first.at_ms,
+        first.text
+    );
+}
+
+#[tokio::test]
+#[ignore = "需要访问 music.163.com"]
 async fn invalid_cookie_is_not_a_session() {
     let client = NeteaseClient::new();
 

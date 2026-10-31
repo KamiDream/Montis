@@ -27,9 +27,12 @@ const BAR_CONTROL_ICON: f32 = 15.0;
 /// 正在播放页次级控制键的图标尺寸。
 const PAGE_CONTROL_ICON: f32 = 20.0;
 /// 正在播放页底部「曲目信息 + 控制台」占用的高度（含底部留白）。
-const INFO_STACK: f32 = 290.0;
-/// 收起时整块信息 + 控制台向下滑出的距离（大于整块高度 + 页面底部留白）。
-const DOCK_SLIDE: f32 = INFO_STACK + 40.0;
+const INFO_STACK: f32 = 340.0;
+/// 收起时整块信息 + 控制台向下滑出的距离。
+///
+/// 留出比信息栈更多的余量：歌词换行后控制台会变高，
+/// 滑动距离不足时收起状态会露出控制台顶部。
+const DOCK_SLIDE: f32 = INFO_STACK + 140.0;
 /// 指针进入窗口底部这块区域时展开信息与控制台。
 /// 必须盖住展开后的整块内容（含错误提示），否则指针停在歌名上时
 /// 控制台会反复收起。
@@ -972,21 +975,22 @@ pub fn page(app: &App) -> Element<'_> {
 
     let dock_w = dock_width(app.viewport.width);
 
-    let dock = container(
-        column![
-            container(widgets::gradient_rule(2.0))
-                .width(Length::Fixed(56.0))
-                .align_x(Alignment::Center),
-            timing,
-            controls,
-        ]
-        .spacing(12)
-        .width(Length::Fill)
-        .align_x(Alignment::Center),
-    )
-    .width(Length::Fixed(dock_w))
-    .padding(Padding::from([16, 26]))
-    .style(theme::dock(app.ui.dock_opacity));
+    let mut dock_column = column![container(widgets::gradient_rule(2.0))
+        .width(Length::Fixed(56.0))
+        .align_x(Alignment::Center),]
+    .spacing(12)
+    .width(Length::Fill)
+    .align_x(Alignment::Center);
+
+    if app.ui.lyrics {
+        dock_column = dock_column.push(lyrics_block(app));
+    }
+    dock_column = dock_column.push(timing).push(controls);
+
+    let dock = container(dock_column)
+        .width(Length::Fixed(dock_w))
+        .padding(Padding::from([16, 26]))
+        .style(theme::dock(app.ui.dock_opacity));
 
     // 曲目信息与控制台是同进同出的一整块：默认全部收起，只留底部小进度条；
     // 指针移到窗口底部中央时整块滑上来。收起时只平移出屏，布局高度不变。
@@ -1004,6 +1008,17 @@ pub fn page(app: &App) -> Element<'_> {
                 .align_x(Alignment::Center),
             dock_offset,
         ),
+        container(mini_lyric(app, 1.0 - dock_mix))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::End)
+            .padding(Padding {
+                top: 0.0,
+                right: 0.0,
+                bottom: 34.0,
+                left: 0.0,
+            }),
         container(mini_progress(app, 1.0 - dock_mix))
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1063,6 +1078,138 @@ pub fn page(app: &App) -> Element<'_> {
     ];
 
     iced::widget::Stack::with_children(layers).into()
+}
+
+/// 控制台里的歌词：当前行 + 翻译，换句时交叉淡化并轻微上浮。
+fn lyrics_block(app: &App) -> Element<'_> {
+    let content: Element<'_> = if app.lyrics.busy {
+        text("歌词加载中…").size(11).color(theme::DIM).into()
+    } else if app.lyrics.index.is_some() {
+        let eased = ease_in_out(app.lyrics.mix.clamp(0.0, 1.0));
+        let mut layers: Vec<Element<'_>> = Vec::new();
+
+        // 旧句淡出；新句淡入，换句时整体更淡。
+        if eased < 1.0 {
+            let fade = (1.0 - eased) * (1.0 - eased);
+            if let Some(previous) = lyric_body(app, app.lyrics.previous, fade) {
+                layers.push(previous);
+            }
+        }
+        if let Some(current) = lyric_body(app, app.lyrics.index, eased * eased) {
+            layers.push(current);
+        }
+
+        iced::widget::Stack::with_children(layers).into()
+    } else {
+        let message = if app
+            .player
+            .current
+            .as_ref()
+            .is_some_and(|song| song.is_bilibili())
+        {
+            "B 站歌曲暂无歌词"
+        } else if app.lyrics.error.is_some() {
+            "歌词加载失败"
+        } else {
+            "暂无歌词"
+        };
+        text(message).size(11).color(theme::DIM).into()
+    };
+
+    container(content)
+        .width(Length::Fill)
+        .height(Length::Shrink)
+        .padding(Padding::from([4, 0]))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// 一行歌词（含翻译）的完整内容，`alpha` 用于交叉淡化。
+fn lyric_body<'a>(app: &'a App, index: Option<usize>, alpha: f32) -> Option<Element<'a>> {
+    let line = app.lyrics.lyrics.lines.get(index?)?;
+    let alpha = alpha.clamp(0.0, 1.0);
+    let mut content = column![lyric_text(&line.text, 15.0, with_alpha(theme::FG, alpha))]
+        .spacing(2)
+        .width(Length::Fill)
+        .align_x(Alignment::Center);
+    if let Some(translation) = &line.translation {
+        content = content.push(lyric_text(translation, 10.0, with_alpha(theme::DIM, alpha)));
+    }
+
+    Some(content.into())
+}
+
+/// 歌词文本：占满可用宽度并自动换行，长句不会被截断。
+fn lyric_text<'a>(value: &'a str, size: f32, color: Color) -> iced::widget::Text<'a> {
+    text(value)
+        .size(size)
+        .color(color)
+        .width(Length::Fill)
+        .center()
+        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+}
+
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color {
+        a: color.a * alpha.clamp(0.0, 1.0),
+        ..color
+    }
+}
+
+/// 控制台收起时，小进度条上方的一行当前歌词。
+fn mini_lyric<'a>(app: &'a App, fade: f32) -> Element<'a> {
+    let fade = fade.clamp(0.0, 1.0);
+    if !app.ui.lyrics || fade <= 0.01 {
+        return container(row![]).height(Length::Fixed(0.0)).into();
+    }
+
+    let eased = ease_in_out(app.lyrics.mix.clamp(0.0, 1.0));
+    let mut layers: Vec<Element<'a>> = Vec::new();
+
+    if eased < 1.0 {
+        let fade = fade * (1.0 - eased) * (1.0 - eased);
+        if let Some(previous) = mini_line(app, app.lyrics.previous, fade) {
+            layers.push(previous);
+        }
+    }
+    if let Some(current) = mini_line(app, app.lyrics.index, fade * eased * eased) {
+        layers.push(current);
+    }
+
+    if layers.is_empty() {
+        return container(row![]).height(Length::Fixed(0.0)).into();
+    }
+
+    container(iced::widget::Stack::with_children(layers))
+        .width(Length::Fill)
+        .padding(Padding::from([0, 30]))
+        .into()
+}
+
+fn mini_line<'a>(app: &'a App, index: Option<usize>, alpha: f32) -> Option<Element<'a>> {
+    let line = app.lyrics.lyrics.lines.get(index?)?;
+    let color = Color {
+        a: 0.92 * alpha.clamp(0.0, 1.0),
+        ..Color::WHITE
+    };
+
+    let mut content = column![lyric_text(&line.text, 14.0, color)]
+        .spacing(1)
+        .width(Length::Fill)
+        .align_x(Alignment::Center);
+    // 译文开关只影响控制台收起后的这行歌词；展开的控制台始终带译文。
+    if app.ui.lyric_translation {
+        if let Some(translation) = &line.translation {
+            let color = Color {
+                a: 0.70 * alpha.clamp(0.0, 1.0),
+                ..Color::WHITE
+            };
+            content = content.push(lyric_text(translation, 10.0, color));
+        }
+    }
+
+    Some(content.into())
 }
 
 /// 控制台收起后底部的小进度条：收起时也能看到播放进度。
@@ -1654,7 +1801,8 @@ mod tests {
 
     #[test]
     fn tall_pages_let_the_ring_fill_the_page() {
-        let (size, overlay) = stage_layout(920.0, 948.0, cover_ratio());
+        // 加入歌词区后信息栈更高，需要更长的窗口才能让环铺满页面。
+        let (size, overlay) = stage_layout(920.0, 1030.0, cover_ratio());
         assert_eq!(size, 920.0);
         assert!(overlay);
     }

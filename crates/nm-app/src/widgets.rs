@@ -31,6 +31,10 @@ pub const ICON_VOLUME_MUTE: &[u8] = include_bytes!("../assets/volume_mute.svg");
 pub const ICON_EXPAND: &[u8] = include_bytes!("../assets/expand.svg");
 pub const ICON_BACK: &[u8] = include_bytes!("../assets/back.svg");
 pub const ICON_SETTINGS: &[u8] = include_bytes!("../assets/settings.svg");
+pub const ICON_LYRICS: &[u8] = include_bytes!("../assets/lyrics.svg");
+pub const ICON_LYRICS_OFF: &[u8] = include_bytes!("../assets/lyrics_off.svg");
+pub const ICON_TRANSLATE: &[u8] = include_bytes!("../assets/translate.svg");
+pub const ICON_TRANSLATE_OFF: &[u8] = include_bytes!("../assets/translate_off.svg");
 pub const ICON_INFO: &[u8] = include_bytes!("../assets/info.svg");
 pub const ICON_QUEUE: &[u8] = include_bytes!("../assets/queue.svg");
 pub const ICON_REFRESH: &[u8] = include_bytes!("../assets/refresh.svg");
@@ -361,8 +365,13 @@ pub fn toast<'a>(message: &'a str, opacity: f32) -> Element<'a> {
 /// 顶栏已经移除，页面直接铺满窗口；只在最上面留一条 12px 的透明拖拽区，
 /// 既能拖动窗口，又不会压住各页面自己的顶部控件。
 /// `dark` 用于正在播放页（深色背景）切换图标颜色；`viz_settings` 为真时
-/// 把可视化设置齿轮也收进来，三个按钮共用一枚半透明胶囊，不再散着漂浮。
-pub fn window_controls(dark: bool, viz_settings: bool) -> Element<'static> {
+/// 把歌词开关与可视化设置齿轮也收进来，所有按钮共用一枚半透明胶囊。
+pub fn window_controls(
+    dark: bool,
+    viz_settings: bool,
+    lyrics_on: bool,
+    translation_on: bool,
+) -> Element<'static> {
     let color = if dark { theme::WHITE_70 } else { theme::DIM };
     let icon_style: fn(&iced::Theme, button::Status) -> button::Style =
         if dark { theme::icon_dark } else { theme::icon };
@@ -375,6 +384,30 @@ pub fn window_controls(dark: bool, viz_settings: bool) -> Element<'static> {
     let mut buttons = row![].spacing(2).align_y(Alignment::Center);
 
     if viz_settings {
+        // 译文开关在歌词开关左边；关闭时给图标加一道斜杠，不用颜色区分。
+        let translate_icon = if translation_on {
+            ICON_TRANSLATE
+        } else {
+            ICON_TRANSLATE_OFF
+        };
+        buttons = buttons.push(
+            button(svg_icon(translate_icon, 15.0, color))
+                .on_press(Message::ToggleLyricTranslation)
+                .padding(Padding::from([7, 9]))
+                .style(icon_style),
+        );
+        // 歌词开关与设置齿轮并排；关闭时给图标加一道斜杠，不用颜色区分。
+        let lyrics_icon = if lyrics_on {
+            ICON_LYRICS
+        } else {
+            ICON_LYRICS_OFF
+        };
+        buttons = buttons.push(
+            button(svg_icon(lyrics_icon, 15.0, color))
+                .on_press(Message::ToggleLyrics)
+                .padding(Padding::from([7, 9]))
+                .style(icon_style),
+        );
         buttons = buttons.push(
             button(svg_icon(ICON_SETTINGS, 15.0, color))
                 .on_press(Message::ToggleSettings)

@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use nm_api::{
     Album, ApiError, Artist, ArtistDetail, BiliFolder, BiliFolderPage, BiliUser, BilibiliClient,
-    Creator, NeteaseClient, PlaylistDetail, PlaylistSummary, Profile, SearchPage, Song, UserStats,
+    Creator, Lyrics, NeteaseClient, PlaylistDetail, PlaylistSummary, Profile, SearchPage, Song,
+    UserStats,
 };
 use nm_audio::{Analyzer, Engine, SpectrumProcessor};
 use nm_core::{cookie_header, parse_cookie_input, AppPaths, BilibiliSession, Session};
@@ -61,6 +62,8 @@ const SEEK_COMMIT_DELAY: Duration = Duration::from_millis(160);
 const TOAST_LIFE: Duration = Duration::from_millis(2400);
 const TOAST_FADE_IN: f32 = 0.16;
 const TOAST_FADE_OUT: f32 = 0.38;
+/// 歌词换句的交叉淡化时长（秒）：慢一点，过渡更柔和。
+const LYRIC_FADE: f32 = 0.36;
 /// 连续自动跳过多少首之后停下，避免整张歌单都不可播时一直空跑。
 const MAX_AUTO_SKIP: u8 = 5;
 /// 搜索结果每页条数（接口单次最多接受 100）。
@@ -295,6 +298,35 @@ pub(crate) struct SearchState {
     pub(crate) error: Option<String>,
     /// 是否已经提交过搜索。未提交时首页展示歌单库。
     pub(crate) submitted: bool,
+}
+
+/// 当前歌曲的歌词与加载状态。
+pub(crate) struct LyricsState {
+    /// 歌词所属歌曲 id：切歌后旧请求的结果直接丢弃。
+    pub(crate) song_id: u64,
+    pub(crate) lyrics: Lyrics,
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+    /// 当前正在展示的歌词行。
+    pub(crate) index: Option<usize>,
+    /// 正在淡出的上一行：换句时做交叉淡入淡出。
+    pub(crate) previous: Option<usize>,
+    /// 换句动画进度：0 = 刚开始，1 = 完成。
+    pub(crate) mix: f32,
+}
+
+impl Default for LyricsState {
+    fn default() -> Self {
+        Self {
+            song_id: 0,
+            lyrics: Lyrics::default(),
+            busy: false,
+            error: None,
+            index: None,
+            previous: None,
+            mix: 1.0,
+        }
+    }
 }
 
 /// 悬浮提示：文案 + 出现时间，透明度在渲染时按经过时间计算。
@@ -773,6 +805,16 @@ pub enum Message {
     },
     PlayArtistTrack(usize),
     EnqueueArtistTrack(usize),
+    /// 显示 / 隐藏播放页歌词。
+    ToggleLyrics,
+    /// 开关歌词换句的淡入淡出。
+    ToggleLyricFade,
+    /// 开关控制台收起时那行歌词的译文。
+    ToggleLyricTranslation,
+    LyricsLoaded {
+        id: u64,
+        result: Result<Lyrics, String>,
+    },
     /// 点击红心：收藏到本地 / 取消收藏。
     ToggleLike(Song),
     /// 打开本地「我喜欢的音乐」页。
@@ -848,6 +890,8 @@ pub struct App {
     /// 歌单歌曲列表的纵向滚动偏移（虚拟化只渲染可见行）。
     pub(crate) playlist_scroll: f32,
     pub(crate) player: PlayerState,
+    /// 当前歌曲歌词（随切歌刷新）。
+    pub(crate) lyrics: LyricsState,
     /// 环形频谱的动画状态（旋转、拖尾、粒子）。
     pub(crate) ring: RingScene,
     /// 可视化的可调参数，随改随存。
@@ -1178,6 +1222,7 @@ impl App {
             playlist: None,
             playlist_scroll: 0.0,
             player,
+            lyrics: LyricsState::default(),
             ring: RingScene::new(),
             visual,
             ui,
@@ -1340,6 +1385,18 @@ impl App {
                 app.go(Screen::NowPlaying);
                 let _ = app.play_from(demo_songs(), 0);
             }
+            // 演示歌词：截图歌词区时用，不影响真实歌曲。
+            if std::env::var("MELO_DEMO_LYRICS").as_deref() == Ok("1") {
+                let lyrics = nm_api::parse_lyrics(
+                    "[00:00.00]故事的小黄花\n[00:04.00]从出生那年就飘着",
+                    "[00:00.00]The little yellow flower\n[00:04.00]Drifting since the year we were born",
+                );
+                app.lyrics = LyricsState {
+                    song_id: app.player.current.as_ref().map(|song| song.id).unwrap_or(0),
+                    lyrics,
+                    ..LyricsState::default()
+                };
+            }
         }
 
         // 开发辅助：真实账号下直接打开本地音乐页（截图 / 手动检查用）。
@@ -1386,9 +1443,14 @@ impl App {
             }
             tasks.push(app.load_bili_folders());
         }
-        if let Some(url) = app.player.current.as_ref().map(|song| song.cover(600)) {
+        // 恢复出来的当前歌曲需要封面，播放条和正在播放页都会用到。
+        if let Some(song) = app.player.current.clone() {
+            let url = song.cover(600);
             app.prime_cached_covers(vec![url.clone()]);
             tasks.push(app.ensure_covers(vec![url]));
+            if !app.demo {
+                tasks.push(app.request_lyrics(&song));
+            }
         }
 
         (app, Task::batch(tasks))
@@ -1515,6 +1577,8 @@ impl App {
                     self.flush_seek();
                     self.refresh_player()
                 };
+                // 歌词换句：保留上一行做交叉淡出，避免每句硬切。
+                self.advance_lyrics(dt * speed);
                 // 告诉场景当前画布范围：画布铺满窗口，粒子飞出屏幕才移除。
                 let stage = views::player::stage_metrics(self.viewport, &self.visual);
                 self.ring.set_view(crate::ring::ViewBounds {
@@ -2806,6 +2870,46 @@ impl App {
                 self.visual = VisualizerConfig::default();
                 self.player.processor.set_gains(self.visual.gains());
                 self.persist_visual();
+                Task::none()
+            }
+            Message::ToggleLyrics => {
+                self.ui.lyrics = !self.ui.lyrics;
+                self.ui_save_at = Some(Instant::now());
+                Task::none()
+            }
+            Message::ToggleLyricFade => {
+                self.ui.lyric_fade = !self.ui.lyric_fade;
+                // 关闭时立刻结束换句过渡，避免停在半透明状态。
+                if !self.ui.lyric_fade {
+                    self.lyrics.previous = None;
+                    self.lyrics.mix = 1.0;
+                }
+                self.ui_save_at = Some(Instant::now());
+                Task::none()
+            }
+            Message::ToggleLyricTranslation => {
+                self.ui.lyric_translation = !self.ui.lyric_translation;
+                self.ui_save_at = Some(Instant::now());
+                Task::none()
+            }
+            Message::LyricsLoaded { id, result } => {
+                // 已经切歌：旧歌曲的歌词结果直接丢弃。
+                if id != self.lyrics.song_id
+                    || self.player.current.as_ref().map(|song| song.id) != Some(id)
+                {
+                    return Task::none();
+                }
+                self.lyrics.busy = false;
+                match result {
+                    Ok(lyrics) => {
+                        self.lyrics.lyrics = lyrics;
+                        self.lyrics.error = None;
+                    }
+                    Err(error) => {
+                        self.lyrics.lyrics = Lyrics::default();
+                        self.lyrics.error = Some(error);
+                    }
+                }
                 Task::none()
             }
             Message::TrackLoaded { id, seq, result } => {
@@ -4293,6 +4397,7 @@ impl App {
         self.player.spectrum = vec![0.0; BAND_COUNT];
         self.player.processor.reset(Some(BAND_COUNT));
         self.ring.reset();
+        self.lyrics = LyricsState::default();
         self.mark_player_dirty();
 
         if self.screen == Screen::NowPlaying {
@@ -4344,12 +4449,13 @@ impl App {
         self.mark_player_dirty();
 
         let cover = self.ensure_covers(vec![song.cover(600)]);
+        let lyrics = self.request_lyrics(&song);
 
         // 演示数据没有真实音源，只展示界面。
         if self.demo {
             self.player.loading = false;
             self.player.pending_resume = None;
-            return cover;
+            return Task::batch([cover, lyrics]);
         }
 
         self.player.loading = true;
@@ -4361,6 +4467,7 @@ impl App {
         let local = (!song.local_path.is_empty()).then(|| PathBuf::from(&song.local_path));
         Task::batch([
             cover,
+            lyrics,
             Task::perform(
                 load_track(
                     self.client.clone(),
@@ -4374,6 +4481,68 @@ impl App {
                 move |result| Message::TrackLoaded { id, seq, result },
             ),
         ])
+    }
+
+    /// 跟随播放进度推进歌词换句：新句淡入上浮，旧句淡出上移。
+    fn advance_lyrics(&mut self, dt: f32) {
+        if self.lyrics.lyrics.is_empty() {
+            if self.lyrics.index.is_some() || self.lyrics.previous.is_some() {
+                self.lyrics.index = None;
+                self.lyrics.previous = None;
+                self.lyrics.mix = 1.0;
+            }
+            return;
+        }
+
+        // 前奏（第一行之前）先展示第一行，和原来的展示逻辑一致。
+        let target = self
+            .lyrics
+            .lyrics
+            .active_index(self.player.position)
+            .unwrap_or(0);
+        if self.lyrics.index != Some(target) {
+            // 关闭淡入淡出时直接切到新句，不保留旧句。
+            self.lyrics.previous = if self.ui.lyric_fade {
+                self.lyrics.index
+            } else {
+                None
+            };
+            self.lyrics.index = Some(target);
+            self.lyrics.mix = if self.ui.lyric_fade { 0.0 } else { 1.0 };
+        }
+
+        if self.ui.lyric_fade && self.lyrics.mix < 1.0 {
+            self.lyrics.mix = (self.lyrics.mix + dt / LYRIC_FADE).min(1.0);
+            if self.lyrics.mix >= 1.0 {
+                self.lyrics.previous = None;
+            }
+        }
+    }
+
+    /// 切歌时清空旧歌词并拉取新歌的歌词。
+    ///
+    /// 本地文件只读同名 `.lrc`；哔哩哔哩视频没有可用的歌词接口，
+    /// 直接展示「暂无歌词」。
+    fn request_lyrics(&mut self, song: &Song) -> Task<Message> {
+        self.lyrics = LyricsState {
+            song_id: song.id,
+            ..LyricsState::default()
+        };
+
+        if self.demo {
+            return Task::none();
+        }
+        if song.is_bilibili() && song.local_path.is_empty() {
+            return Task::none();
+        }
+
+        self.lyrics.busy = true;
+        let id = song.id;
+        let song = song.clone();
+        let client = self.client.clone();
+        Task::perform(load_lyrics(client, song), move |result| {
+            Message::LyricsLoaded { id, result }
+        })
     }
 
     /// 自动续播：单曲循环优先于随机，唱完就重播当前曲。
@@ -4663,6 +4832,7 @@ impl App {
         self.player.spectrum = vec![0.0; BAND_COUNT];
         self.player.processor.reset(Some(BAND_COUNT));
         self.ring.reset();
+        self.lyrics = LyricsState::default();
 
         self.profile = None;
         self.artist = None;
@@ -4817,7 +4987,12 @@ impl App {
         // 播放页把可视化设置齿轮也收进同一枚胶囊里，避免右上角散着几个图标。
         // 它放在浮层下面，队列 / 设置打开时会被遮住，不会压住面板头部。
         let player_page = self.screen == Screen::NowPlaying && self.player.current.is_some();
-        let window_layer = widgets::window_controls(player_page, player_page);
+        let window_layer = widgets::window_controls(
+            player_page,
+            player_page,
+            self.ui.lyrics,
+            self.ui.lyric_translation,
+        );
 
         // 队列是全局浮层：首页和正在播放页都能打开。
         let queue_layer: Element<'_> = if self.show_queue {
@@ -5181,6 +5356,25 @@ fn toggle_mute(volume: &mut f32, muted_volume: &mut Option<f32>) {
 
 async fn load_account(client: NeteaseClient) -> Result<Option<Profile>, String> {
     client.account().await.map_err(|error| error.to_string())
+}
+
+/// 取当前歌曲的歌词：本地音乐读同名 `.lrc`，其余走网易云接口。
+async fn load_lyrics(client: NeteaseClient, song: Song) -> Result<Lyrics, String> {
+    if !song.local_path.is_empty() {
+        let path = PathBuf::from(&song.local_path).with_extension("lrc");
+        let Ok(bytes) = std::fs::read(&path) else {
+            // 本地文件的 id 是路径哈希，不能拿去请求网易云。
+            return Ok(Lyrics::default());
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let text = text.trim_start_matches('\u{feff}');
+        return Ok(nm_api::parse_lyrics(text, ""));
+    }
+
+    client
+        .song_lyric(song.id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// 取播放地址并下载整首音频；优先用用户下载的本地音乐，其次命中播放缓存，

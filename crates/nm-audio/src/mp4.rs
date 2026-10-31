@@ -1,9 +1,9 @@
-//! 哔哩哔哩 DASH 音轨（fMP4）解码。
+//! 需要自定义数据源的音频解码（B 站 fMP4 / 网易云 FLAC）。
 //!
 //! rodio 0.19 的 `Decoder` 会用 `ReadSeekSource` 包装字节流，而它的
-//! `byte_len()` 永远返回 `None`。symphonia 的 isomp4 解析器在初始化时需要
-//! 文件长度，否则直接返回 `SeekError(Unseekable)`（rodio 随后会 `unreachable!`
-//! panic）。网易云的 mp3 / flac 不受影响，但 B 站返回的 `.m4s` 会踩到这个问题。
+//! `byte_len()` 永远返回 `None`：isomp4 解析器初始化时会直接报
+//! `SeekError(Unseekable)`，FLAC 的 symphonia 后端也会因此无法二分定位。
+//! 无损 / Hi-Res 返回的正是 FLAC，所以拖动进度条不会跳转。
 //!
 //! 这里复用 symphonia 的解码流程，只把底层数据源换成一个能报告长度的
 //! `MediaSource`，并实现成 rodio 的 `Source` 交给播放引擎。
@@ -24,6 +24,11 @@ use symphonia::core::units::{Duration as Units, Time};
 /// 数据是不是 MP4 / fMP4（`ftyp` box 紧跟在 4 字节长度之后）。
 pub fn is_mp4(bytes: &[u8]) -> bool {
     bytes.len() >= 12 && &bytes[4..8] == b"ftyp"
+}
+
+/// 数据是不是原生 FLAC（以 `fLaC` 魔数开头）。
+pub fn is_flac(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"fLaC")
 }
 
 /// 带长度信息的只读字节源：这是绕开 rodio `byte_len = None` 的关键。
@@ -54,8 +59,8 @@ impl MediaSource for BytesSource {
     }
 }
 
-/// 把一整段 fMP4 音频解成 f32 采样。
-pub struct Mp4Source {
+/// 把一整段音频（fMP4 / FLAC 等）解成 f32 采样。
+pub struct SymphoniaSource {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn SymphoniaDecoder>,
     track_id: u32,
@@ -66,8 +71,8 @@ pub struct Mp4Source {
     duration: Option<Duration>,
 }
 
-impl Mp4Source {
-    pub fn open(bytes: Vec<u8>) -> Result<Self, String> {
+impl SymphoniaSource {
+    pub fn open(bytes: Vec<u8>, extension: &str) -> Result<Self, String> {
         let len = bytes.len() as u64;
         let stream = MediaSourceStream::new(
             Box::new(BytesSource {
@@ -78,7 +83,7 @@ impl Mp4Source {
         );
 
         let mut hint = Hint::new();
-        hint.with_extension("m4a");
+        hint.with_extension(extension);
 
         let probed = symphonia::default::get_probe()
             .format(
@@ -165,7 +170,7 @@ impl Mp4Source {
     }
 }
 
-impl Iterator for Mp4Source {
+impl Iterator for SymphoniaSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
@@ -183,7 +188,7 @@ impl Iterator for Mp4Source {
     }
 }
 
-impl Source for Mp4Source {
+impl Source for SymphoniaSource {
     fn current_frame_len(&self) -> Option<usize> {
         None
     }
@@ -215,7 +220,7 @@ impl Source for Mp4Source {
                 },
             )
             .map_err(|_| SeekError::NotSupported {
-                underlying_source: "bilibili-dash-mp4",
+                underlying_source: "montis-symphonia",
             })?;
 
         self.decoder.reset();
@@ -230,7 +235,7 @@ impl Source for Mp4Source {
 mod tests {
     use std::time::Duration;
 
-    use super::is_mp4;
+    use super::{is_flac, is_mp4};
 
     #[test]
     fn detects_mp4_signature() {
@@ -241,6 +246,13 @@ mod tests {
         assert!(!is_mp4(b"short"));
     }
 
+    #[test]
+    fn detects_flac_signature() {
+        assert!(is_flac(b"fLaC\x00\x00\x00\x00"));
+        assert!(!is_flac(b"ID3\x04\x00\x00"));
+        assert!(!is_flac(b"OggS"));
+    }
+
     /// 手工验证：`cargo test -p nm-audio --offline --lib -- --ignored --nocapture`
     #[test]
     #[ignore = "需要 /tmp/bili_sample.m4s"]
@@ -248,7 +260,7 @@ mod tests {
         use rodio::Source;
 
         let bytes = std::fs::read("/tmp/bili_sample.m4s").expect("sample");
-        let mut source = super::Mp4Source::open(bytes).expect("open mp4");
+        let mut source = super::SymphoniaSource::open(bytes, "m4a").expect("open mp4");
         assert!(source.total_duration().is_some(), "没有读到时长");
 
         let samples = source.by_ref().take(44_100 * 3).count();

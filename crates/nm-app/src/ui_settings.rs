@@ -22,6 +22,13 @@ pub struct UiSettings {
     pub cache_limit_mb: u64,
     /// 首次启动的使用须知是否已确认：只保存一次，之后不再弹出。
     pub disclaimer_accepted: bool,
+    /// 正在播放页是否显示歌词。
+    pub lyrics: bool,
+    /// 歌词换句是否使用淡入淡出（关闭后直接切换）。
+    pub lyric_fade: bool,
+    /// 控制台收起时，小进度条上方的歌词是否显示译文。
+    /// 展开的控制台始终显示译文。
+    pub lyric_translation: bool,
 }
 
 impl Default for UiSettings {
@@ -31,6 +38,9 @@ impl Default for UiSettings {
             dock_opacity: 0.84,
             cache_limit_mb: DEFAULT_LIMIT_MB,
             disclaimer_accepted: false,
+            lyrics: true,
+            lyric_fade: true,
+            lyric_translation: true,
         }
     }
 }
@@ -130,6 +140,10 @@ mod tests {
         assert!((settings.animation_speed - 1.4).abs() < f32::EPSILON);
         assert!((settings.dock_opacity - 0.84).abs() < f32::EPSILON);
         assert_eq!(settings.cache_limit_mb, DEFAULT_LIMIT_MB);
+        // 旧配置没有歌词开关时默认打开。
+        assert!(settings.lyrics);
+        assert!(settings.lyric_fade);
+        assert!(settings.lyric_translation);
         let _ = std::fs::remove_file(&path);
     }
 

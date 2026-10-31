@@ -145,12 +145,16 @@ fn sidebar(app: &App) -> Element<'_> {
 
     // 哔哩哔哩是独立的「外部渠道」，不跟本地音乐库混在一起，
     // 单独开一个分组，账号与收藏夹入口都在这个分组下。
-    let bilibili = column![
+    // 进入某个收藏夹后，在按钮下面挂一个缩进的子节点，和网易云歌单一致。
+    let mut bilibili_group = column![
         sidebar_label("BiliBili", None),
         bili_user_card(app),
         bilibili
     ]
     .spacing(8);
+    if let Some(name) = current_bili_folder_name(app) {
+        bilibili_group = bilibili_group.push(current_playlist_row(&name));
+    }
 
     // 本地分组：红心收藏与下载都只存在本机，放在最下面一组。
     let local = column![sidebar_label("本地", None), liked, downloads].spacing(8);
@@ -160,7 +164,7 @@ fn sidebar(app: &App) -> Element<'_> {
     let navigation = column![
         library,
         widgets::vspace(4.0),
-        bilibili,
+        bilibili_group,
         widgets::vspace(4.0),
         local,
     ]
@@ -191,6 +195,10 @@ fn sidebar(app: &App) -> Element<'_> {
 /// 当前打开的歌单名：详情还没回来时先从歌单列表里推断，避免加载期间侧栏闪空。
 fn current_playlist_name(app: &App) -> Option<String> {
     let state = app.playlist.as_ref()?;
+    // 哔哩哔哩收藏夹有自己的子节点，不能混进网易云歌单。
+    if state.bilibili {
+        return None;
+    }
     state
         .detail
         .as_ref()
@@ -201,6 +209,27 @@ fn current_playlist_name(app: &App) -> Option<String> {
                 .iter()
                 .find(|item| item.id == state.id)
                 .map(|item| item.name.clone())
+        })
+}
+
+/// 当前打开的哔哩哔哩收藏夹名：详情还没回来时先从收藏夹列表里推断。
+fn current_bili_folder_name(app: &App) -> Option<String> {
+    let state = app.playlist.as_ref()?;
+    if !app.bili_page || !state.bilibili {
+        return None;
+    }
+
+    state
+        .detail
+        .as_ref()
+        .map(|detail| detail.name.clone())
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            app.bili_state
+                .folders
+                .iter()
+                .find(|folder| folder.id == state.id)
+                .map(|folder| folder.title.clone())
         })
 }
 
@@ -481,14 +510,9 @@ fn icon_tile(icon: &'static [u8], tint: iced::Color) -> Element<'static> {
         .into()
 }
 
-/// 界面动画：速度档位 + 带尾迹的动态预览。
+/// 界面动画：速度档位 + 歌词过渡 + 带尾迹的动态预览。
 fn animation_card(app: &App) -> Element<'_> {
     let speed = app.ui.animation_speed;
-
-    let mut options = row![].spacing(8);
-    for (value, label) in ANIMATION_PRESETS {
-        options = options.push(speed_option(label, value, (speed - value).abs() < 0.01));
-    }
 
     widgets::card(
         column![
@@ -497,14 +521,72 @@ fn animation_card(app: &App) -> Element<'_> {
                 theme::ACCENT,
                 "界面动画",
                 widgets::pill(format!("{speed:.1}×"), PillKind::Ok),
-                "控制页面切换、加载进度与提示图标的节奏",
+                "控制页面切换、加载进度与歌词换句的过渡节奏",
                 Some("改动立即生效"),
             ),
-            options,
+            widgets::soft_rule(),
+            setting_row("动画速度", "预设档位，点击即可切换", speed_chips(app)),
+            lyric_fade_row(app),
             animation_preview(app),
         ]
         .spacing(14),
     )
+}
+
+/// 速度档位按钮。
+fn speed_chips(app: &App) -> Element<'_> {
+    let speed = app.ui.animation_speed;
+    let mut options = row![].spacing(8);
+    for (value, label) in ANIMATION_PRESETS {
+        options = options.push(speed_option(label, value, (speed - value).abs() < 0.01));
+    }
+    options.into()
+}
+
+/// 歌词换句的淡入淡出开关。
+fn lyric_fade_row(app: &App) -> Element<'_> {
+    setting_row(
+        "歌词淡入淡出",
+        "换句时渐隐渐显，关闭后直接切换",
+        switch(app.ui.lyric_fade, Message::ToggleLyricFade),
+    )
+}
+
+/// 设置行：左侧标题与说明，右侧控件。三张卡片共用同一种排版。
+fn setting_row<'a>(label: &'a str, hint: &'a str, control: Element<'a>) -> Element<'a> {
+    row![
+        column![text(label).size(12).color(theme::FG), widgets::hint(hint),].spacing(2),
+        horizontal_space(),
+        control,
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .width(Length::Fill)
+    .into()
+}
+
+/// 统一的开关按钮。
+fn switch<'a>(on: bool, message: Message) -> Element<'a> {
+    button(text(if on { "开" } else { "关" }).size(11).color(if on {
+        iced::Color::WHITE
+    } else {
+        theme::FG
+    }))
+    .on_press(message)
+    .padding(Padding::from([3, 14]))
+    .style(theme::toggle(on))
+    .into()
+}
+
+/// 滑杆两端的范围标注。
+fn range_labels(left: &str, right: &str) -> Element<'static> {
+    row![
+        widgets::hint(left.to_string()),
+        horizontal_space(),
+        widgets::hint(right.to_string()),
+    ]
+    .width(Length::Fill)
+    .into()
 }
 
 /// 独立的「关于」页：顶栏里的品牌信息搬到这里，另附版本与本地数据说明。
@@ -644,67 +726,63 @@ fn info_line<'a>(label: &'a str, value: &'a str) -> Element<'a> {
     .into()
 }
 
-/// 音频缓存：占用条、3 GB ~ 10 GB 的上限滑杆、关闭与清空。
+/// 音频缓存：占用条、3 GB ~ 10 GB 的上限滑杆、开关与清空。
 fn cache_card(app: &App) -> Element<'_> {
     let limit = app.ui.cache_limit_mb;
     let enabled = limit > 0;
 
-    let toggle = button(
-        text(if enabled {
-            "关闭缓存"
+    let toggle = switch(
+        enabled,
+        Message::SetCacheLimit(if enabled {
+            0
         } else {
-            "重新开启"
-        })
-        .size(11),
-    )
-    .on_press(Message::SetCacheLimit(if enabled {
-        0
-    } else {
-        crate::audio_cache::DEFAULT_LIMIT_MB
-    }))
-    .padding(Padding::from([6, 14]))
-    .style(theme::ghost);
+            crate::audio_cache::DEFAULT_LIMIT_MB
+        }),
+    );
 
     let clear = button(text("清空全部缓存").size(11))
         .on_press(Message::ClearCache)
         .padding(Padding::from([6, 14]))
         .style(theme::ghost);
 
-    let mut content = column![setting_head(
-        widgets::ICON_REFRESH,
-        theme::VIOLET,
-        "音频缓存",
-        widgets::pill(format_bytes(app.cache_usage), PillKind::Muted),
-        "听过的歌曲留在本地，达到上限后自动淘汰最久没听的；封面与首页快照也一并缓存",
-        Some("~/.cache/melody"),
-    )]
+    let mut content = column![
+        setting_head(
+            widgets::ICON_REFRESH,
+            theme::VIOLET,
+            "音频缓存",
+            widgets::pill(format_bytes(app.cache_usage), PillKind::Muted),
+            "听过的歌曲留在本地，封面与首页快照也一并缓存",
+            Some("~/.cache/melody"),
+        ),
+        widgets::soft_rule(),
+        usage_bar(app.cache_usage, limit * MB),
+        setting_row(
+            "本地缓存",
+            if enabled {
+                "达到上限后自动淘汰最久没听的歌曲"
+            } else {
+                "已关闭：每次播放都会重新下载"
+            },
+            toggle,
+        ),
+    ]
     .spacing(14);
-
-    content = content.push(usage_bar(app.cache_usage, limit * MB));
-    content = content.push(widgets::hint(format!(
-        "本地音乐下载独立存放（已用 {}），不受缓存上限与「清空缓存」影响。",
-        format_bytes(app.downloads_usage)
-    )));
 
     if enabled {
         content = content.push(cache_slider(app));
-        content = content.push(
-            row![horizontal_space(), clear, toggle]
-                .spacing(8)
-                .align_y(Alignment::Center),
-        );
-    } else {
-        content = content.push(
-            row![
-                widgets::hint("缓存已关闭：每次播放都会重新下载。"),
-                horizontal_space(),
-                clear,
-                toggle,
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
     }
+    content = content.push(
+        row![
+            widgets::hint(format!(
+                "本地音乐下载独立存放（已用 {}）",
+                format_bytes(app.downloads_usage)
+            )),
+            horizontal_space(),
+            clear,
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    );
 
     widgets::card(content)
 }
@@ -774,12 +852,7 @@ fn cache_slider(app: &App) -> Element<'_> {
         crate::views::player::setting_slider(fraction, |t| {
             Message::SetCacheLimit(crate::audio_cache::fraction_to_limit(t))
         }),
-        row![
-            widgets::hint("3 GB"),
-            horizontal_space(),
-            widgets::hint("10 GB"),
-        ]
-        .width(Length::Fill),
+        range_labels("3 GB", "10 GB"),
     ]
     .spacing(2)
     .into()
@@ -788,6 +861,7 @@ fn cache_slider(app: &App) -> Element<'_> {
 /// 播放页控制台的不透明度：滑杆 + 可直接对比的预览。
 fn dock_card(app: &App) -> Element<'_> {
     let opacity = app.ui.dock_opacity;
+    let (low, high) = crate::ui_settings::DOCK_OPACITY_RANGE;
 
     widgets::card(
         column![
@@ -797,9 +871,14 @@ fn dock_card(app: &App) -> Element<'_> {
                 "播放页控制台",
                 widgets::pill(format!("{:.0}%", opacity * 100.0), PillKind::Muted),
                 "控制台越低越能透出封面氛围，100% 为实心白",
-                Some("拖动滑杆调节"),
+                Some("实时预览"),
             ),
+            widgets::soft_rule(),
             dock_slider(app),
+            range_labels(
+                &format!("{:.0}%", low * 100.0),
+                &format!("{:.0}%", high * 100.0)
+            ),
             dock_preview(opacity),
         ]
         .spacing(14),

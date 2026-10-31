@@ -11,6 +11,7 @@
 mod bilibili;
 mod client;
 mod crypto;
+mod lyrics;
 mod models;
 
 pub use bilibili::{
@@ -19,6 +20,7 @@ pub use bilibili::{
 };
 pub use client::{NeteaseClient, QrLogin, QrStatus, QrVerify, UserStats, VerifyQr, VerifyStatus};
 pub use crypto::{weapi, WeapiParams};
+pub use lyrics::{parse_lrc, parse_lyrics, LyricLine, Lyrics};
 pub use models::{
     bilibili_song_id, format_duration, is_bilibili_id, is_bilibili_url, sized_cover, Album, Artist,
     ArtistDetail, Creator, PlaylistDetail, PlaylistSummary, SearchPage, Song, SongUrl, Source,

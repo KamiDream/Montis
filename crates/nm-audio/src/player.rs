@@ -338,10 +338,19 @@ fn load(sink: &Sink, shared: &Arc<Shared>, bytes: Vec<u8>) {
     sink.stop();
     shared.reset_spectrum();
 
-    // 网易云的 mp3 / flac 继续交给 rodio；B 站的 DASH 音轨（fMP4）需要
-    // 自己构造 symphonia 数据源，否则 rodio 会因为报不出文件长度而解码失败。
+    // 网易云的 mp3 / flac 与 B 站的 DASH 音轨都要能 seek：
+    // rodio 的 `Decoder` 包装器报不出字节长度，FLAC 无法二分定位、fMP4 甚至
+    // 初始化就失败，所以这两类容器走自己的 symphonia 数据源。
     let source: Box<dyn Source<Item = f32> + Send> = if crate::mp4::is_mp4(&bytes) {
-        match crate::mp4::Mp4Source::open(bytes) {
+        match crate::mp4::SymphoniaSource::open(bytes, "m4a") {
+            Ok(source) => Box::new(source),
+            Err(error) => {
+                shared.fail(format!("无法解码这首歌曲：{error}"));
+                return;
+            }
+        }
+    } else if crate::mp4::is_flac(&bytes) {
+        match crate::mp4::SymphoniaSource::open(bytes, "flac") {
             Ok(source) => Box::new(source),
             Err(error) => {
                 shared.fail(format!("无法解码这首歌曲：{error}"));
@@ -625,5 +634,25 @@ mod tests {
 
         assert_eq!(shared.duration_ms.load(Ordering::Relaxed), 300_000);
         assert_eq!(shared.position_ms.load(Ordering::Relaxed), 120_000);
+    }
+
+    /// 无损 / Hi-Res 返回的是 FLAC。rodio 默认的 claxon 后端不支持 seek，
+    /// 即使用 symphonia 后端，rodio 的 `ReadSeekSource` 也报不出字节长度。
+    /// 这里验证我们自己的 `SymphoniaSource` 能正常 seek。
+    #[test]
+    #[ignore = "需要 /tmp/montis_seek.flac（可用 ffmpeg 生成）"]
+    fn flac_source_supports_seek() {
+        use rodio::Source;
+
+        let bytes = std::fs::read("/tmp/montis_seek.flac").expect("读取 FLAC 样本");
+        let mut source = crate::mp4::SymphoniaSource::open(bytes, "flac").expect("解码 FLAC");
+        assert!(source.total_duration().is_some(), "没有读到时长");
+        for _ in 0..2_000 {
+            source.next();
+        }
+        source
+            .try_seek(Duration::from_secs(2))
+            .expect("FLAC 解码器应当支持 seek");
+        assert!(source.next().is_some(), "seek 后没有音频");
     }
 }

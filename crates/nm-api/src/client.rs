@@ -12,6 +12,7 @@ use reqwest::header::{HeaderMap, CONTENT_TYPE, COOKIE, ORIGIN, REFERER, SET_COOK
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 
+use crate::lyrics::{parse_lyrics, Lyrics};
 use crate::models::{ArtistDetail, PlaylistDetail, PlaylistSummary, SearchPage, Song, SongUrl};
 use crate::{crypto, ApiError, Result};
 
@@ -725,6 +726,30 @@ impl NeteaseClient {
         Ok(song)
     }
 
+    /// 获取 LRC 歌词，并把翻译按时间戳合并进来。
+    /// 纯音乐 / 没有歌词时返回空列表，而不是报错。
+    pub async fn song_lyric(&self, id: u64) -> Result<Lyrics> {
+        let body = self
+            .request(
+                "/weapi/song/lyric?lv=-1&kv=-1&tv=-1",
+                json!({ "id": id, "lv": -1, "kv": -1, "tv": -1 }),
+            )
+            .await?;
+
+        let code = code_of(&body);
+        if code != 200 {
+            return Err(ApiError::Api {
+                code,
+                message: message_of(&body),
+            });
+        }
+
+        Ok(parse_lyrics(
+            lyric_text(&body, "lrc"),
+            lyric_text(&body, "tlyric"),
+        ))
+    }
+
     /// 服务端注销失败不影响本地清理，因此错误会被忽略。
     pub async fn logout(&self) {
         let _ = self.request("/weapi/logout", json!({})).await;
@@ -838,6 +863,14 @@ fn message_of(body: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("未知错误")
         .to_string()
+}
+
+/// 歌词接口把文本放在 `lrc.lyric` / `tlyric.lyric`，缺失时按空串处理。
+fn lyric_text<'a>(body: &'a Value, key: &str) -> &'a str {
+    body.get(key)
+        .and_then(|section| section.get("lyric"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 /// 搜索结果：歌曲在 `result.songs`，总数在 `result.songCount`。
