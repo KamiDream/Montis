@@ -20,7 +20,6 @@ pub const ICON_HOME: &[u8] = include_bytes!("../assets/home.svg");
 pub const ICON_SEARCH: &[u8] = include_bytes!("../assets/search.svg");
 pub const ICON_DAILY: &[u8] = include_bytes!("../assets/daily.svg");
 pub const ICON_FM: &[u8] = include_bytes!("../assets/radio.svg");
-pub const ICON_EXIT: &[u8] = include_bytes!("../assets/exit.svg");
 pub const ICON_MINIMIZE: &[u8] = include_bytes!("../assets/minimize.svg");
 pub const ICON_CLOSE: &[u8] = include_bytes!("../assets/close.svg");
 pub const ICON_PLAY: &[u8] = include_bytes!("../assets/play.svg");
@@ -45,6 +44,7 @@ pub const ICON_DOWNLOAD: &[u8] = include_bytes!("../assets/download.svg");
 pub const ICON_DOWNLOADED: &[u8] = include_bytes!("../assets/downloaded.svg");
 pub const ICON_TRASH: &[u8] = include_bytes!("../assets/trash.svg");
 pub const ICON_FOLDER: &[u8] = include_bytes!("../assets/folder.svg");
+pub const ICON_BILIBILI: &[u8] = include_bytes!("../assets/bilibili.svg");
 
 #[derive(Clone, Copy)]
 pub enum PillKind {
@@ -279,7 +279,10 @@ fn artist_segments(song: &Song, max: usize) -> Vec<(String, Option<u64>)> {
             remaining.saturating_sub(artist.name.chars().count())
         };
 
-        segments.push((name, (artist.id != 0).then_some(artist.id)));
+        segments.push((
+            name,
+            (!song.is_bilibili() && artist.id != 0).then_some(artist.id),
+        ));
         if truncated {
             break;
         }
@@ -540,30 +543,6 @@ pub fn equalizer_live<'a>(
     }
 
     bars.into()
-}
-
-/// 呼吸状态点，用来提示“正在等待扫码”。
-pub fn pulse_dot<'a>(color: iced::Color, phase: f32, size: f32) -> Element<'a> {
-    let alpha = 0.25 + 0.75 * ((phase * 2.1).sin() * 0.5 + 0.5);
-    container(row![])
-        .width(size)
-        .height(size)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(iced::Color { a: alpha, ..color })),
-            border: border::rounded(size * 0.5),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-pub fn feature_line_dark<'a>(value: &'a str) -> Element<'a> {
-    row![
-        dot(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.75), 6.0),
-        text(value).size(12).color(theme::WHITE_82),
-    ]
-    .spacing(9)
-    .align_y(Alignment::Center)
-    .into()
 }
 
 /// 用几层同心圆伪造柔和光晕（iced 没有高斯模糊，只能叠透明度）。

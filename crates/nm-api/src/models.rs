@@ -23,6 +23,30 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// 歌曲音源。同一份 `Song` 既可能来自网易云，也可能来自哔哩哔哩收藏夹。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    #[default]
+    Netease,
+    Bilibili,
+}
+
+/// 哔哩哔哩的 aid 与网易云的歌曲 id 可能重叠，用最高位做命名空间。
+pub const BILIBILI_ID_OFFSET: u64 = 1 << 63;
+
+pub fn bilibili_song_id(aid: u64) -> u64 {
+    BILIBILI_ID_OFFSET | aid
+}
+
+pub fn is_bilibili_id(id: u64) -> bool {
+    id & BILIBILI_ID_OFFSET != 0
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Artist {
     #[serde(default, deserialize_with = "null_as_default")]
@@ -58,6 +82,15 @@ pub struct Song {
     /// 0 免费 / 1 VIP / 4 购买专辑 / 8 低音质免费。
     #[serde(default, deserialize_with = "null_as_default")]
     pub fee: i64,
+    /// 音源；旧数据 / 网易云接口没有这个字段时按网易云处理。
+    #[serde(default)]
+    pub source: Source,
+    /// 哔哩哔哩视频号（仅 B 站音源）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bvid: String,
+    /// 哔哩哔哩分 P 的 cid，取音频流时必填（仅 B 站音源）。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cid: u64,
     /// 本地文件路径（仅客户端使用，网络接口不会返回这个字段）。
     ///
     /// 从「音乐文件夹」扫描出来的歌曲靠它播放；也随播放快照与本地收藏
@@ -95,6 +128,10 @@ impl Song {
 
     pub fn duration(&self) -> String {
         format_duration(self.dt)
+    }
+
+    pub fn is_bilibili(&self) -> bool {
+        self.source == Source::Bilibili
     }
 }
 
@@ -351,12 +388,25 @@ impl SongUrl {
 }
 
 /// 给封面 URL 追加尺寸参数。网易云的图片服务支持 `?param=300y300`。
+/// 网易云用 `param=300y300`，哔哩哔哩 CDN 用 `@300w_300h_1c`。
 pub fn sized_cover(url: &str, size: u32) -> String {
     if url.is_empty() {
         return String::new();
     }
+    if is_bilibili_url(url) {
+        // 已经带过尺寸后缀就原样返回，避免重复拼接。
+        if url.contains('@') {
+            return url.to_string();
+        }
+        return format!("{url}@{size}w_{size}h_1c");
+    }
     let separator = if url.contains('?') { '&' } else { '?' };
     format!("{url}{separator}param={size}y{size}")
+}
+
+/// 哔哩哔哩的图片 / 音视频 CDN。封面下载需要带 `Referer`。
+pub fn is_bilibili_url(url: &str) -> bool {
+    url.contains("hdslb.com") || url.contains("biliimg.com") || url.contains("bilivideo.com")
 }
 
 pub fn format_duration(milliseconds: u64) -> String {

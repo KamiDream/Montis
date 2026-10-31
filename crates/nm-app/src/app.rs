@@ -14,11 +14,11 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 
 use nm_api::{
-    Album, ApiError, Artist, ArtistDetail, Creator, NeteaseClient, PlaylistDetail, PlaylistSummary,
-    Profile, SearchPage, Song, UserStats,
+    Album, ApiError, Artist, ArtistDetail, BiliFolder, BiliFolderPage, BiliUser, BilibiliClient,
+    Creator, NeteaseClient, PlaylistDetail, PlaylistSummary, Profile, SearchPage, Song, UserStats,
 };
 use nm_audio::{Analyzer, Engine, SpectrumProcessor};
-use nm_core::{cookie_header, parse_cookie_input, AppPaths, Session};
+use nm_core::{cookie_header, parse_cookie_input, AppPaths, BilibiliSession, Session};
 
 use crate::audio_cache::{self, AudioCache, MB};
 use crate::avatar;
@@ -117,7 +117,6 @@ fn scroll_recent(last: Option<Instant>, now: Instant) -> bool {
 pub enum Screen {
     /// 启动时用本地 Cookie 恢复会话。
     Restoring,
-    Login,
     Home,
     /// 正在播放 / 频谱可视化页。
     NowPlaying,
@@ -431,6 +430,43 @@ pub(crate) struct PlaylistState {
     pub(crate) local_liked: bool,
     /// 这是本地「本地音乐」页（用户下载的歌曲）：同样是纯本地列表。
     pub(crate) local_downloads: bool,
+    /// 这是哔哩哔哩收藏夹：详情由 B 站接口构建，不走网易云的补齐逻辑。
+    pub(crate) bilibili: bool,
+    /// 哔哩哔哩收藏夹已加载到第几页。
+    pub(crate) bili_page: u32,
+    /// 哔哩哔哩收藏夹还有下一页。
+    pub(crate) bili_has_more: bool,
+    /// 正在加载哔哩哔哩收藏夹的下一页。
+    pub(crate) bili_busy: bool,
+}
+
+impl PlaylistState {
+    pub(crate) fn bilibili(id: u64) -> Self {
+        Self {
+            id,
+            detail: None,
+            busy: true,
+            error: None,
+            filling: false,
+            local_liked: false,
+            local_downloads: false,
+            bilibili: true,
+            bili_page: 1,
+            bili_has_more: false,
+            bili_busy: false,
+        }
+    }
+}
+
+/// 哔哩哔哩页面：连接表单与收藏夹列表。
+#[derive(Default)]
+pub(crate) struct BilibiliState {
+    pub(crate) cookie_input: String,
+    pub(crate) connecting: bool,
+    pub(crate) connect_error: Option<String>,
+    pub(crate) folders: Vec<BiliFolder>,
+    pub(crate) folders_busy: bool,
+    pub(crate) folders_error: Option<String>,
 }
 
 /// 播放器状态。音频设备与解码在 `nm_audio::Engine` 的专用线程里。
@@ -588,6 +624,8 @@ pub enum Message {
     PointerMoved(Point),
     CookieChanged(String),
     CookieSubmit,
+    /// 在首页内容区打开网易云登录面板。
+    OpenLogin,
     /// 从剪贴板读取原始 Cookie（绕过输入框对换行 / 制表符的过滤）。
     PasteCookie,
     CookiePasted(Option<String>),
@@ -662,6 +700,24 @@ pub enum Message {
     AcceptDisclaimer,
     /// 使用须知弹窗打开时吞掉背景点击。
     DisclaimerBlocked,
+    /// 打开哔哩哔哩收藏夹页。
+    OpenBilibili,
+    BiliCookieChanged(String),
+    /// 从剪贴板读取原始 Cookie，绕过输入框对换行 / 制表符的过滤。
+    BiliPasteCookie,
+    BiliCookiePasted(Option<String>),
+    BiliConnect,
+    BiliConnected(Result<BiliUser, String>),
+    BiliFoldersLoaded(Result<Vec<BiliFolder>, String>),
+    ReloadBiliFolders,
+    OpenBiliFolder(u64),
+    BiliFolderLoaded {
+        id: u64,
+        page: u32,
+        result: Result<BiliFolderPage, String>,
+    },
+    LoadMoreBiliFolder,
+    BiliLogout,
     /// 打开独立的搜索页（歌曲搜索从首页拆出）。
     OpenSearch,
     /// 打开每日推荐页。
@@ -788,6 +844,8 @@ pub struct App {
     ui_save_at: Option<Instant>,
     /// 首页内容区是否正在显示独立的「设置」页。
     pub(crate) settings_page: bool,
+    /// 首页内容区是否展示网云登录面板（哔哩哔哩有自己的连接页）。
+    pub(crate) netease_login_page: bool,
     /// 首页内容区是否展示独立的「关于」页。
     pub(crate) about_page: bool,
     /// 首页内容区是否展示独立的「搜索」页。
@@ -800,6 +858,13 @@ pub struct App {
     pub(crate) fm_page: bool,
     /// 私人 FM 的歌曲列表。
     pub(crate) fm: FmState,
+    /// 哔哩哔哩接口客户端（与网易云会话相互独立）。
+    pub(crate) bili: BilibiliClient,
+    /// 哔哩哔哩登录态：Cookie 与账号资料单独保存。
+    pub(crate) bili_session: BilibiliSession,
+    /// 首页内容区是否展示哔哩哔哩收藏夹。
+    pub(crate) bili_page: bool,
+    pub(crate) bili_state: BilibiliState,
     /// 本地红心收藏：歌曲与顺序都存在 `liked.json`。
     pub(crate) liked: LikedStore,
     /// 下载到本地的音乐库；文件在数据目录，不受缓存上限影响。
@@ -940,6 +1005,14 @@ impl App {
         let (session, warning) = Session::load(&paths.session_file());
         let client = NeteaseClient::new();
 
+        // 哔哩哔哩登录态单独保存：与网易云会话互不影响。
+        let (bili_session, bili_warning) = BilibiliSession::load(&paths.bilibili_file());
+        let bili = BilibiliClient::new();
+        let bili_logged_in = bili_session.is_logged_in();
+        if bili_logged_in {
+            bili.set_cookies(bili_session.cookies.clone());
+        }
+
         let restoring = session.is_logged_in();
         if restoring {
             client.set_cookies(session.cookies.clone());
@@ -962,8 +1035,10 @@ impl App {
 
         // 本地已有资料时不必停在恢复页：首页先用快照与封面缓存撑起来，
         // 会话校验（`SessionChecked`）与歌单刷新都在后台继续。
-        let start_home = demo || (restoring && cached_profile.is_some());
-        if start_home && !demo {
+        // 只登录了哔哩哔哩时也直接进首页，默认打开哔哩哔哩分区。
+        let bili_only = bili_logged_in && !restoring && !demo;
+        let start_home = demo || (restoring && cached_profile.is_some()) || bili_logged_in;
+        if start_home && !demo && restoring {
             library.busy = true;
         }
 
@@ -1061,13 +1136,8 @@ impl App {
             paths,
             client,
             session,
-            screen: if start_home {
-                Screen::Home
-            } else if restoring {
-                Screen::Restoring
-            } else {
-                Screen::Login
-            },
+            // 没有账号时也不再停在登录屏：直接进首页，登录面板在内容区里打开。
+            screen: Screen::Home,
             // 启动时也做一次淡入，避免首帧硬切。
             screen_fade: 1.0,
             view_fade: 0.0,
@@ -1075,7 +1145,7 @@ impl App {
             cookie_busy: false,
             login_error: None,
             restore_error: None,
-            storage_error: warning,
+            storage_error: warning.or(bili_warning),
             profile: if demo {
                 Some(demo_profile())
             } else if start_home {
@@ -1097,12 +1167,17 @@ impl App {
             cache_usage,
             ui_save_at: None,
             settings_page: show_settings_page,
+            netease_login_page: !restoring && !bili_logged_in && !demo,
             about_page: show_about,
             search_page: false,
             daily_page: false,
             daily: DailyState::default(),
             fm_page: false,
             fm: FmState::default(),
+            bili,
+            bili_session,
+            bili_page: bili_only,
+            bili_state: BilibiliState::default(),
             liked,
             downloads,
             download_tracks,
@@ -1197,6 +1272,10 @@ impl App {
                 Ok("artist") => {
                     let _ = app.open_artist(2001);
                 }
+                Ok("bilibili") => {
+                    // 只预览连接页；没有 Cookie 时展示表单。
+                    app.bili_page = true;
+                }
                 Ok("playlist") => {
                     app.playlist = Some(PlaylistState {
                         id: 1000,
@@ -1206,6 +1285,10 @@ impl App {
                         filling: false,
                         local_liked: false,
                         local_downloads: false,
+                        bilibili: false,
+                        bili_page: 0,
+                        bili_has_more: false,
+                        bili_busy: false,
                     });
                 }
                 Ok("liked") => {
@@ -1275,6 +1358,15 @@ impl App {
 
         // 恢复出来的当前歌曲需要封面，播放条和正在播放页都会用到。
         let mut tasks = vec![window_task, boot, open_downloads_task, local_scan_task];
+
+        // 只登录了哔哩哔哩：启动就直接拉收藏夹与头像，不用等用户点菜单。
+        if bili_only && !demo {
+            let face = nm_api::sized_cover(&app.bili_session.face, 600);
+            if !face.is_empty() {
+                tasks.push(app.ensure_covers(vec![face]));
+            }
+            tasks.push(app.load_bili_folders());
+        }
         if let Some(url) = app.player.current.as_ref().map(|song| song.cover(600)) {
             app.prime_cached_covers(vec![url.clone()]);
             tasks.push(app.ensure_covers(vec![url]));
@@ -1301,6 +1393,7 @@ impl App {
             // 提示的淡入淡出很短：它存在期间抬到 60fps，否则 20fps 会一跳一跳。
             || self.toast.is_some()
             || self.settings_page
+            || self.netease_login_page
             || self.about_page
         {
             16
@@ -1441,6 +1534,10 @@ impl App {
                 Task::none()
             }
             Message::CookieSubmit => self.cookie_login(),
+            Message::OpenLogin => {
+                self.open_netease_login();
+                Task::none()
+            }
             Message::PasteCookie => iced::clipboard::read().map(Message::CookiePasted),
             Message::CookiePasted(result) => {
                 match result {
@@ -1468,12 +1565,20 @@ impl App {
             Message::SessionChecked(result) => match result {
                 Ok(Some(profile)) => self.finish_login(profile),
                 Ok(None) => {
-                    // 本地票据已失效：清掉后回到登录页。
+                    // 本地票据已失效：清掉后在首页内容区打开登录面板。
                     self.client.clear_cookies();
                     self.session.clear();
                     self.persist();
+                    self.profile = None;
+                    self.avatar = None;
+                    self.avatar_busy = false;
                     self.reset_home_state();
-                    self.go(Screen::Login);
+                    // 哔哩哔哩仍有效：直接回收藏夹，不强迫重新登录网易云。
+                    if self.bili_session.is_logged_in() {
+                        self.bili_page = true;
+                    } else {
+                        self.open_netease_login();
+                    }
                     Task::none()
                 }
                 Err(error) => {
@@ -1730,10 +1835,12 @@ impl App {
                     self.flush_ui_settings();
                 }
                 self.settings_page = false;
+                self.netease_login_page = false;
                 self.about_page = false;
                 self.search_page = false;
                 self.daily_page = false;
                 self.fm_page = false;
+                self.bili_page = false;
                 self.artist = None;
                 self.view_fade = 1.0;
                 Task::none()
@@ -2020,6 +2127,7 @@ impl App {
                 self.search_page = false;
                 self.daily_page = false;
                 self.fm_page = false;
+                self.bili_page = false;
                 self.artist = None;
                 self.view_fade = 1.0;
                 Task::none()
@@ -2033,6 +2141,7 @@ impl App {
                 self.search_page = false;
                 self.daily_page = false;
                 self.fm_page = false;
+                self.bili_page = false;
                 self.artist = None;
                 self.view_fade = 1.0;
                 Task::none()
@@ -2067,6 +2176,10 @@ impl App {
             }
             Message::DisclaimerBlocked => Task::none(),
             Message::OpenSearch => {
+                if self.profile.is_none() {
+                    self.show_toast("这个页面需要网易云账号，请先登录网易云。".to_string());
+                    return Task::none();
+                }
                 self.show_quality = false;
                 self.show_queue = false;
                 self.show_settings = false;
@@ -2076,11 +2189,16 @@ impl App {
                 self.search_page = true;
                 self.daily_page = false;
                 self.fm_page = false;
+                self.bili_page = false;
                 self.artist = None;
                 self.view_fade = 1.0;
                 Task::none()
             }
             Message::OpenDaily => {
+                if self.profile.is_none() {
+                    self.show_toast("这个页面需要网易云账号，请先登录网易云。".to_string());
+                    return Task::none();
+                }
                 self.show_quality = false;
                 self.show_queue = false;
                 self.show_settings = false;
@@ -2090,12 +2208,17 @@ impl App {
                 self.search_page = false;
                 self.daily_page = true;
                 self.fm_page = false;
+                self.bili_page = false;
                 self.artist = None;
                 self.view_fade = 1.0;
                 // 推荐按天更新：每次进入都重新取一次。
                 self.load_daily()
             }
             Message::OpenFm => {
+                if self.profile.is_none() {
+                    self.show_toast("这个页面需要网易云账号，请先登录网易云。".to_string());
+                    return Task::none();
+                }
                 self.show_quality = false;
                 self.show_queue = false;
                 self.show_settings = false;
@@ -2105,6 +2228,7 @@ impl App {
                 self.search_page = false;
                 self.daily_page = false;
                 self.fm_page = true;
+                self.bili_page = false;
                 self.artist = None;
                 self.view_fade = 1.0;
                 // 已经拿过这一批就保留，切回来不用重新请求；换一批用刷新按钮。
@@ -2113,6 +2237,195 @@ impl App {
                 } else {
                     Task::none()
                 }
+            }
+            Message::OpenBilibili => {
+                self.show_quality = false;
+                self.show_queue = false;
+                self.show_settings = false;
+                self.playlist = None;
+                self.settings_page = false;
+                self.about_page = false;
+                self.search_page = false;
+                self.daily_page = false;
+                self.fm_page = false;
+                self.artist = None;
+                self.bili_page = true;
+                self.netease_login_page = false;
+                self.view_fade = 1.0;
+
+                let mut tasks = Vec::new();
+                let face = nm_api::sized_cover(&self.bili_session.face, 600);
+                if !face.is_empty() {
+                    tasks.push(self.ensure_covers(vec![face]));
+                }
+                // 已登录但还没拉过收藏夹：进入页面时自动取一次。
+                if self.bili_session.is_logged_in() && self.bili_state.folders.is_empty() {
+                    tasks.push(self.load_bili_folders());
+                }
+                Task::batch(tasks)
+            }
+            Message::BiliCookieChanged(value) => {
+                self.bili_state.cookie_input = value;
+                self.bili_state.connect_error = None;
+                Task::none()
+            }
+            Message::BiliPasteCookie => iced::clipboard::read().map(Message::BiliCookiePasted),
+            Message::BiliCookiePasted(result) => {
+                match result {
+                    Some(text) if !text.trim().is_empty() => {
+                        // 保留原文：`parse_bilibili_cookie_input` 自己会处理
+                        // 整段 Cookie / DevTools 表格行 / 裸 SESSDATA。
+                        self.bili_state.cookie_input = text.trim().to_string();
+                        self.bili_state.connect_error = None;
+                    }
+                    _ => {
+                        self.bili_state.connect_error =
+                            Some("无法读取剪贴板，请手动粘贴 Cookie。".to_string());
+                    }
+                }
+                Task::none()
+            }
+            Message::BiliConnect => {
+                if self.bili_state.connecting {
+                    return Task::none();
+                }
+                let input = self.bili_state.cookie_input.trim().to_string();
+                if input.is_empty() {
+                    self.bili_state.connect_error =
+                        Some("请粘贴哔哩哔哩 Cookie 或 SESSDATA。".to_string());
+                    return Task::none();
+                }
+                self.bili_state.connecting = true;
+                self.bili_state.connect_error = None;
+                Task::perform(
+                    connect_bilibili(self.bili.clone(), input),
+                    Message::BiliConnected,
+                )
+            }
+            Message::BiliConnected(result) => {
+                self.bili_state.connecting = false;
+                match result {
+                    Ok(user) => {
+                        self.bili_session.cookies = self.bili.snapshot_cookies();
+                        self.bili_session.mid = user.mid;
+                        self.bili_session.name = user.name.clone();
+                        self.bili_session.face = user.face.clone();
+                        if let Err(error) = self.bili_session.save(&self.paths.bilibili_file()) {
+                            self.storage_error = Some(error);
+                        }
+                        self.bili_state.cookie_input.clear();
+                        self.bili_state.connect_error = None;
+                        self.bili_state.folders.clear();
+                        self.bili_state.folders_error = None;
+                        self.bili_state.folders_busy = false;
+
+                        // 连接成功：关掉登录面板，回到哔哩哔哩分区；
+                        // 首页已有内容时保留（侧边栏一直存在，不需要重建）。
+                        if !self.session.is_logged_in() {
+                            self.profile = None;
+                            self.avatar = None;
+                            self.avatar_busy = false;
+                        }
+                        self.netease_login_page = false;
+                        self.bili_page = true;
+                        self.view_fade = 1.0;
+                        if self.screen != Screen::NowPlaying {
+                            self.go(Screen::Home);
+                        }
+
+                        let mut tasks = Vec::new();
+                        if let Some(url) = self.player.current.as_ref().map(|song| song.cover(600))
+                        {
+                            self.prime_cached_covers(vec![url.clone()]);
+                            tasks.push(self.ensure_covers(vec![url]));
+                        }
+                        if !user.face.is_empty() {
+                            tasks.push(
+                                self.ensure_covers(vec![nm_api::sized_cover(&user.face, 600)]),
+                            );
+                        }
+                        tasks.push(self.load_bili_folders());
+                        Task::batch(tasks)
+                    }
+                    Err(error) => {
+                        self.bili_state.connect_error = Some(error);
+                        Task::none()
+                    }
+                }
+            }
+            Message::BiliFoldersLoaded(result) => {
+                self.bili_state.folders_busy = false;
+                // 退出登录后到达的旧响应直接丢弃。
+                if !self.bili_session.is_logged_in() {
+                    return Task::none();
+                }
+                match result {
+                    Ok(folders) => {
+                        self.bili_state.folders_error = None;
+                        let covers = folders.iter().map(|folder| folder.cover(300)).collect();
+                        self.bili_state.folders = folders;
+                        self.ensure_covers(covers)
+                    }
+                    Err(error) => {
+                        self.bili_state.folders_error = Some(error);
+                        Task::none()
+                    }
+                }
+            }
+            Message::ReloadBiliFolders => {
+                // 手动刷新时允许重试上一次失败 / 仍在进行中的请求。
+                self.bili_state.folders_busy = false;
+                self.load_bili_folders()
+            }
+            Message::OpenBiliFolder(id) => self.open_bili_folder(id),
+            Message::BiliFolderLoaded { id, page, result } => {
+                let Some(state) = self.playlist.as_mut() else {
+                    return Task::none();
+                };
+                if !state.bilibili || state.id != id {
+                    return Task::none();
+                }
+                match result {
+                    Ok(page_data) => {
+                        let covers = apply_bili_page(state, id, page, page_data);
+                        self.ensure_covers(covers)
+                    }
+                    Err(error) => {
+                        state.bili_busy = false;
+                        if page == 1 {
+                            state.busy = false;
+                            state.error = Some(error);
+                        } else {
+                            self.show_toast(format!("加载更多失败：{error}"));
+                        }
+                        Task::none()
+                    }
+                }
+            }
+            Message::LoadMoreBiliFolder => {
+                let Some(state) = &mut self.playlist else {
+                    return Task::none();
+                };
+                if !state.bilibili || state.bili_busy || !state.bili_has_more {
+                    return Task::none();
+                }
+                state.bili_busy = true;
+                let id = state.id;
+                let page = state.bili_page + 1;
+                self.load_bili_folder(id, page)
+            }
+            Message::BiliLogout => {
+                self.bili.clear_cookies();
+                self.bili_session.clear();
+                if let Err(error) = self.bili_session.save(&self.paths.bilibili_file()) {
+                    self.storage_error = Some(error);
+                }
+                self.bili_state = BilibiliState::default();
+                if self.playlist.as_ref().is_some_and(|state| state.bilibili) {
+                    self.playlist = None;
+                }
+                self.bili_page = true;
+                Task::none()
             }
             Message::ReloadFm => self.load_fm(),
             Message::FmLoaded(result) => {
@@ -2466,7 +2779,7 @@ impl App {
                 self.restore_error = None;
                 Task::perform(load_account(self.client.clone()), Message::ProfileLoaded)
             }
-            Message::BackToLogin | Message::Logout => self.reset_to_login(),
+            Message::BackToLogin | Message::Logout => self.sign_out(),
         }
     }
 
@@ -2515,6 +2828,7 @@ impl App {
         self.restore_error = None;
         self.cookie_busy = false;
         self.cookie_input.clear();
+        self.netease_login_page = false;
         if keep_home {
             self.library.error = None;
         } else {
@@ -2616,10 +2930,12 @@ impl App {
         self.playlist = None;
         self.liked_transfer = None;
         self.settings_page = false;
+        self.netease_login_page = false;
         self.about_page = false;
         self.search_page = false;
         self.daily_page = false;
         self.fm_page = false;
+        self.bili_page = false;
         self.artist = None;
         self.daily = DailyState::default();
         self.fm = FmState::default();
@@ -2922,6 +3238,10 @@ impl App {
             filling: false,
             local_liked: true,
             local_downloads: false,
+            bilibili: false,
+            bili_page: 0,
+            bili_has_more: false,
+            bili_busy: false,
         });
         self.playlist_scroll = 0.0;
         self.settings_page = false;
@@ -2929,6 +3249,7 @@ impl App {
         self.search_page = false;
         self.daily_page = false;
         self.fm_page = false;
+        self.bili_page = false;
         self.artist = None;
         self.view_fade = 1.0;
 
@@ -3009,10 +3330,11 @@ impl App {
             self.download_inflight.insert(song.id);
             let quality = self.player.quality;
             let client = self.client.clone();
+            let bilibili = self.bili.clone();
             let store = Arc::clone(&self.downloads);
             let message_song = song.clone();
             tasks.push(Task::perform(
-                download_track(client, store, song, quality),
+                download_track(client, bilibili, store, song, quality),
                 move |result| Message::Downloaded {
                     song: message_song.clone(),
                     result,
@@ -3144,6 +3466,10 @@ impl App {
             filling: false,
             local_liked: false,
             local_downloads: true,
+            bilibili: false,
+            bili_page: 0,
+            bili_has_more: false,
+            bili_busy: false,
         });
         self.playlist_scroll = 0.0;
         self.settings_page = false;
@@ -3151,10 +3477,47 @@ impl App {
         self.search_page = false;
         self.daily_page = false;
         self.fm_page = false;
+        self.bili_page = false;
         self.artist = None;
         self.view_fade = 1.0;
 
         self.ensure_covers(covers)
+    }
+
+    /// 拉取哔哩哔哩收藏夹列表。
+    fn load_bili_folders(&mut self) -> Task<Message> {
+        if self.bili_state.folders_busy || !self.bili_session.is_logged_in() {
+            return Task::none();
+        }
+        self.bili_state.folders_busy = true;
+        self.bili_state.folders_error = None;
+        Task::perform(
+            fetch_bili_folders(self.bili.clone(), self.bili_session.mid),
+            Message::BiliFoldersLoaded,
+        )
+    }
+
+    /// 打开一个哔哩哔哩收藏夹（复用歌单页的列表与播放逻辑）。
+    fn open_bili_folder(&mut self, id: u64) -> Task<Message> {
+        self.playlist = Some(PlaylistState::bilibili(id));
+        self.playlist_scroll = 0.0;
+        self.settings_page = false;
+        self.about_page = false;
+        self.search_page = false;
+        self.daily_page = false;
+        self.fm_page = false;
+        self.bili_page = true;
+        self.artist = None;
+        self.view_fade = 1.0;
+
+        self.load_bili_folder(id, 1)
+    }
+
+    fn load_bili_folder(&self, id: u64, page: u32) -> Task<Message> {
+        Task::perform(
+            fetch_bili_folder(self.bili.clone(), id, page),
+            move |result| Message::BiliFolderLoaded { id, page, result },
+        )
     }
 
     /// 正在看本地音乐页时同步列表，不改变滚动位置。
@@ -3527,6 +3890,9 @@ impl App {
     }
 
     fn open_playlist(&mut self, id: u64) -> Task<Message> {
+        if self.profile.is_none() {
+            return Task::none();
+        }
         self.playlist = Some(PlaylistState {
             id,
             detail: None,
@@ -3535,6 +3901,10 @@ impl App {
             filling: false,
             local_liked: false,
             local_downloads: false,
+            bilibili: false,
+            bili_page: 0,
+            bili_has_more: false,
+            bili_busy: false,
         });
         self.playlist_scroll = 0.0;
         self.settings_page = false;
@@ -3542,6 +3912,7 @@ impl App {
         self.search_page = false;
         self.daily_page = false;
         self.fm_page = false;
+        self.bili_page = false;
         self.artist = None;
         self.view_fade = 1.0;
 
@@ -3619,7 +3990,7 @@ impl App {
             if self.cover_refreshed.insert(url.clone()) {
                 let fresh_url = url.clone();
                 tasks.push(Task::perform(
-                    load_cover(self.client.clone(), dir.clone(), url),
+                    load_cover(self.client.clone(), self.bili.clone(), dir.clone(), url),
                     move |result| Message::CoverLoaded {
                         url: fresh_url.clone(),
                         cached: false,
@@ -3830,7 +4201,15 @@ impl App {
         Task::batch([
             cover,
             Task::perform(
-                load_track(self.client.clone(), cache, downloads, id, quality, local),
+                load_track(
+                    self.client.clone(),
+                    self.bili.clone(),
+                    cache,
+                    downloads,
+                    song,
+                    quality,
+                    local,
+                ),
                 move |result| Message::TrackLoaded { id, seq, result },
             ),
         ])
@@ -4101,7 +4480,8 @@ impl App {
         Task::none()
     }
 
-    fn reset_to_login(&mut self) -> Task<Message> {
+    /// 退出网易云账号：清掉会话与播放状态，在首页内容区打开登录面板。
+    fn sign_out(&mut self) -> Task<Message> {
         self.client.clear_cookies();
         self.session.clear();
         self.persist();
@@ -4127,7 +4507,6 @@ impl App {
         self.artist = None;
         self.avatar = None;
         self.avatar_busy = false;
-        self.go(Screen::Login);
         self.show_settings = false;
         self.show_quality = false;
         self.show_queue = false;
@@ -4136,11 +4515,36 @@ impl App {
         self.cookie_input.clear();
         self.cookie_busy = false;
         self.reset_home_state();
+        // 哔哩哔哩仍有效时直接留在收藏夹；否则在内容区打开登录面板。
+        if self.bili_session.is_logged_in() {
+            self.bili_page = true;
+            self.view_fade = 1.0;
+        } else {
+            self.open_netease_login();
+        }
 
         // 退出登录后不再恢复上一个账号的播放队列。
         self.persist_player();
 
         Task::none()
+    }
+
+    /// 在首页内容区打开网易云登录面板（不再切到独立的登录屏）。
+    fn open_netease_login(&mut self) {
+        self.netease_login_page = true;
+        self.login_error = None;
+        self.settings_page = false;
+        self.about_page = false;
+        self.search_page = false;
+        self.daily_page = false;
+        self.fm_page = false;
+        self.bili_page = false;
+        self.playlist = None;
+        self.artist = None;
+        self.view_fade = 1.0;
+        if self.screen != Screen::NowPlaying {
+            self.go(Screen::Home);
+        }
     }
 
     fn persist(&mut self) {
@@ -4215,7 +4619,6 @@ impl App {
     fn view(&self) -> Element<'_> {
         let body: Element<'_> = match self.screen {
             Screen::Restoring => views::restoring::view(self),
-            Screen::Login => views::login::view(self),
             Screen::Home => views::home::view(self),
             Screen::NowPlaying => views::player::page(self),
         };
@@ -4623,12 +5026,15 @@ async fn load_account(client: NeteaseClient) -> Result<Option<Profile>, String> 
 /// 都没有才走网络。
 async fn load_track(
     client: NeteaseClient,
+    bilibili: BilibiliClient,
     cache: Arc<Mutex<AudioCache>>,
     downloads: Arc<Mutex<DownloadStore>>,
-    id: u64,
+    song: Song,
     quality: AudioQuality,
     local: Option<PathBuf>,
 ) -> Result<LoadedTrack, TrackError> {
+    let id = song.id;
+
     // 音乐文件夹里的文件：直接读磁盘，不经过任何网络与缓存逻辑。
     if let Some(path) = local {
         let bytes = std::fs::read(&path)
@@ -4644,24 +5050,46 @@ async fn load_track(
         return Ok(LoadedTrack { bytes, label });
     }
 
+    // 哔哩哔哩：DASH 纯音频流，音质档位由接口决定（忽略网易云的音质设置）。
+    if song.is_bilibili() {
+        let key = audio_cache::key(id, "bili");
+        if let Some((bytes, label)) = audio_cache::lookup(&cache, &key) {
+            return Ok(LoadedTrack { bytes, label });
+        }
+
+        let audio = bilibili
+            .audio(&song.bvid, song.cid)
+            .await
+            .map_err(classify_track_error)?;
+        let bytes = bilibili
+            .fetch_bytes(&audio.url)
+            .await
+            .map_err(|error| TrackError::Failed(error.to_string()))?;
+        audio_cache::store(&cache, &key, &bytes, &audio.label);
+        return Ok(LoadedTrack {
+            bytes,
+            label: audio.label,
+        });
+    }
+
     let key = audio_cache::key(id, quality.value());
     if let Some((bytes, label)) = audio_cache::lookup(&cache, &key) {
         return Ok(LoadedTrack { bytes, label });
     }
 
-    let song = client
+    let song_url = client
         .song_url(id, quality.value())
         .await
         .map_err(classify_track_error)?;
-    let url = song
+    let url = song_url
         .available()
         .map(str::to_string)
-        .ok_or_else(|| TrackError::Skipped(song.blocked_reason()))?;
+        .ok_or_else(|| TrackError::Skipped(song_url.blocked_reason()))?;
     let bytes = client
         .fetch_bytes(&url)
         .await
         .map_err(|error| TrackError::Failed(error.to_string()))?;
-    let label = song.quality_label();
+    let label = song_url.quality_label();
     audio_cache::store(&cache, &key, &bytes, &label);
     Ok(LoadedTrack { bytes, label })
 }
@@ -4669,25 +5097,38 @@ async fn load_track(
 /// 下载一首歌并存进本地音乐库；返回实际拿到的音质标签。
 async fn download_track(
     client: NeteaseClient,
+    bilibili: BilibiliClient,
     store: Arc<Mutex<DownloadStore>>,
     song: Song,
     quality: AudioQuality,
 ) -> Result<String, TrackError> {
-    let info = client
-        .song_url(song.id, quality.value())
-        .await
-        .map_err(classify_track_error)?;
-    let url = info
-        .available()
-        .map(str::to_string)
-        .ok_or_else(|| TrackError::Skipped(info.blocked_reason()))?;
-    let bytes = client
-        .fetch_bytes(&url)
-        .await
-        .map_err(|error| TrackError::Failed(error.to_string()))?;
+    let (bytes, label, kind) = if song.is_bilibili() {
+        let audio = bilibili
+            .audio(&song.bvid, song.cid)
+            .await
+            .map_err(classify_track_error)?;
+        let bytes = bilibili
+            .fetch_bytes(&audio.url)
+            .await
+            .map_err(|error| TrackError::Failed(error.to_string()))?;
+        // DASH 音轨是 mp4 容器（fMP4），rodio / symphonia 可以直接解码。
+        (bytes, audio.label, "m4s".to_string())
+    } else {
+        let info = client
+            .song_url(song.id, quality.value())
+            .await
+            .map_err(classify_track_error)?;
+        let url = info
+            .available()
+            .map(str::to_string)
+            .ok_or_else(|| TrackError::Skipped(info.blocked_reason()))?;
+        let bytes = client
+            .fetch_bytes(&url)
+            .await
+            .map_err(|error| TrackError::Failed(error.to_string()))?;
+        (bytes, info.quality_label(), info.kind.clone())
+    };
 
-    let label = info.quality_label();
-    let kind = info.kind.clone();
     let mut store = store.lock().unwrap_or_else(|error| error.into_inner());
     store
         .add(song, &bytes, &label, &kind)
@@ -4791,6 +5232,103 @@ async fn load_playlist(client: NeteaseClient, id: u64) -> Result<PlaylistDetail,
         .map_err(|error| error.to_string())
 }
 
+/// 用粘贴的 Cookie 验证 B 站登录态。验证失败会清空客户端里的 Cookie。
+async fn connect_bilibili(client: BilibiliClient, input: String) -> Result<BiliUser, String> {
+    let cookies = nm_api::parse_bilibili_cookie_input(&input);
+    let has_sessdata = cookies
+        .get("SESSDATA")
+        .is_some_and(|value| !value.is_empty());
+    if !has_sessdata {
+        return Err("没有找到 SESSDATA，请粘贴完整 Cookie 或 SESSDATA 的值。".to_string());
+    }
+
+    let previous = client.snapshot_cookies();
+    client.set_cookies(cookies);
+    match client.user().await {
+        Ok(Some(user)) => Ok(user),
+        Ok(None) => {
+            client.set_cookies(previous);
+            Err("Cookie 无效或已过期，请重新登录 bilibili.com 后再复制。".to_string())
+        }
+        Err(error) => {
+            client.set_cookies(previous);
+            Err(error.to_string())
+        }
+    }
+}
+
+async fn fetch_bili_folders(client: BilibiliClient, mid: u64) -> Result<Vec<BiliFolder>, String> {
+    client.folders(mid).await.map_err(|error| error.to_string())
+}
+
+async fn fetch_bili_folder(
+    client: BilibiliClient,
+    id: u64,
+    page: u32,
+) -> Result<BiliFolderPage, String> {
+    client
+        .folder(id, page)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// 把一页收藏夹内容合并进已打开的列表；返回需要预取封面的 URL。
+fn apply_bili_page(
+    state: &mut PlaylistState,
+    id: u64,
+    page: u32,
+    page_data: BiliFolderPage,
+) -> Vec<String> {
+    let first = page == 1;
+    let mut covers: Vec<String> = page_data.songs.iter().map(|song| song.cover(96)).collect();
+
+    let detail = state.detail.get_or_insert_with(|| PlaylistDetail {
+        id,
+        name: page_data.title.clone(),
+        cover_img_url: page_data.cover.clone(),
+        track_count: page_data.total,
+        play_count: 0,
+        description: None,
+        creator: None,
+        subscribed: false,
+        tracks: Vec::new(),
+        track_ids: Vec::new(),
+    });
+
+    if first {
+        detail.name = page_data.title;
+        detail.cover_img_url = page_data.cover.clone();
+        detail.tracks.clear();
+        detail.track_count = page_data.total;
+        detail.description =
+            (!page_data.description.trim().is_empty()).then_some(page_data.description.clone());
+        if !detail.cover_img_url.is_empty() {
+            covers.push(detail.cover(420));
+        }
+    }
+
+    let known: HashSet<u64> = detail.tracks.iter().map(|song| song.id).collect();
+    detail.tracks.extend(
+        page_data
+            .songs
+            .into_iter()
+            .filter(|song| !known.contains(&song.id)),
+    );
+    detail.track_count = detail
+        .track_count
+        .max(page_data.total)
+        .max(detail.tracks.len() as u64);
+
+    state.bili_page = page;
+    state.bili_has_more = page_data.has_more;
+    state.bili_busy = false;
+    state.busy = false;
+    state.error = None;
+    state.filling = false;
+
+    covers
+}
+
 /// 详情接口只返回歌单前一部分歌曲；用 `trackIds` 分批补齐剩下的。
 async fn fill_playlist_tracks(
     client: NeteaseClient,
@@ -4845,13 +5383,22 @@ async fn load_local_cover(dir: PathBuf, url: String, path: PathBuf) -> Result<Co
 /// 下载封面、写入缓存，再裁好交给界面。
 async fn load_cover(
     client: NeteaseClient,
+    bilibili: BilibiliClient,
     dir: PathBuf,
     url: String,
 ) -> Result<CoverImage, String> {
-    let bytes = client
-        .fetch_bytes(&url)
-        .await
-        .map_err(|error| error.to_string())?;
+    // 哔哩哔哩的图片 CDN 需要 Referer，交给 B 站客户端下载。
+    let bytes = if nm_api::is_bilibili_url(&url) {
+        bilibili
+            .fetch_bytes(&url)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        client
+            .fetch_bytes(&url)
+            .await
+            .map_err(|error| error.to_string())?
+    };
     cover_cache::write(&dir, &url, &bytes);
     Ok(decorate_cover(&url, bytes))
 }
@@ -4870,10 +5417,38 @@ fn decorate_cover(url: &str, bytes: Vec<u8>) -> CoverImage {
     }
 }
 
-/// 从封面 URL 的 `param=300y300` 里取出目标尺寸。
+/// 从封面 URL 取出目标尺寸。
+///
+/// * 网易云：`param=300y300`；
+/// * 哔哩哔哩：`@300w_300h_1c`。
 fn cover_size(url: &str) -> Option<u32> {
-    let value = url.split_once("param=")?.1;
-    value.split('y').next()?.parse().ok()
+    if let Some(value) = url.split_once("param=").map(|(_, value)| value) {
+        if let Some(size) = value.split('y').next().and_then(|size| size.parse().ok()) {
+            return Some(size);
+        }
+    }
+
+    let value = url.split_once('@')?.1;
+    let width = value.split('w').next()?;
+    width.parse().ok()
+}
+
+#[cfg(test)]
+mod cover_size_tests {
+    use super::cover_size;
+
+    #[test]
+    fn reads_both_cdn_styles() {
+        assert_eq!(
+            cover_size("https://p1.music.126.net/a.jpg?param=300y300"),
+            Some(300)
+        );
+        assert_eq!(
+            cover_size("https://i0.hdslb.com/bfs/archive/a.jpg@600w_600h_1c"),
+            Some(600)
+        );
+        assert_eq!(cover_size("https://i0.hdslb.com/bfs/archive/a.jpg"), None);
+    }
 }
 
 /// 仅用于开发期布局预览：MELO_DEMO_USER=1。
@@ -4980,7 +5555,7 @@ fn demo_songs() -> Vec<Song> {
             }),
             dt: *duration,
             fee: 0,
-            local_path: String::new(),
+            ..Song::default()
         })
         .collect()
 }

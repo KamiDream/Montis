@@ -287,6 +287,7 @@ fn local_file(path: &Path, folder_cover: Option<&Path>) -> LocalFile {
         dt: metadata.duration_ms,
         fee: 0,
         local_path: path.to_string_lossy().into_owned(),
+        ..Song::default()
     };
 
     LocalFile {

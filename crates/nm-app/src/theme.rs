@@ -109,16 +109,6 @@ pub fn scrim(_theme: &Theme) -> container::Style {
     }
 }
 
-/// 登录页左侧品牌卡：纯品牌色块。
-pub fn brand_card(_theme: &Theme) -> container::Style {
-    container::Style {
-        text_color: Some(Color::WHITE),
-        background: Some(hero_gradient()),
-        border: border::rounded(18.0),
-        shadow: Shadow::default(),
-    }
-}
-
 pub fn card(_theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(FG),
@@ -212,6 +202,21 @@ pub fn primary(_theme: &Theme, status: button::Status) -> button::Style {
         button::Status::Disabled => Color::from_rgb(0.66, 0.74, 0.95),
         button::Status::Hovered | button::Status::Pressed => Color::from_rgb(0.184, 0.376, 0.925),
         _ => ACCENT,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: Color::WHITE,
+        border: border::rounded(8.0),
+        shadow: Shadow::default(),
+    }
+}
+
+/// 哔哩哔哩品牌粉的主按钮：与网易云的蓝色主按钮对应。
+pub fn bili_primary(_theme: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Disabled => Color::from_rgb(0.95, 0.72, 0.80),
+        button::Status::Hovered | button::Status::Pressed => Color::from_rgb(0.90, 0.28, 0.44),
+        _ => Color::from_rgb(0.976, 0.376, 0.545),
     };
     button::Style {
         background: Some(Background::Color(background)),

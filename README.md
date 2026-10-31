@@ -1,9 +1,9 @@
 # Montis（山音）
 
-Montis（中文名：山音）是一个用 Rust 编写的网易云音乐第三方桌面客户端，基于 **iced 0.13 + wgpu**。
-界面采用浅色卡片布局，播放页带环形实时频谱与粒子效果。支持 Cookie 登录、歌单 / 搜索 /
-每日推荐 / 私人 FM / 歌手页、本地收藏、歌曲下载与本地音乐文件夹、音频与封面缓存，
-以及可调的频谱可视化。
+Montis（中文名：山音）是一个用 Rust 编写的第三方桌面音乐客户端，基于 **iced 0.13 + wgpu**。
+网易云音乐提供歌单 / 搜索 / 每日推荐 / 私人 FM / 歌手页，哔哩哔哩提供收藏夹纯音频播放。
+界面采用浅色卡片布局，播放页带环形实时频谱与粒子效果。支持 Cookie 登录、本地收藏、歌曲下载与
+本地音乐文件夹、音频与封面缓存，以及可调的频谱可视化。
 
 > **当前仅面向 Linux 桌面**（X11 / Wayland），要求 Rust 1.80 及以上版本。
 
@@ -24,53 +24,30 @@ Montis（中文名：山音）是一个用 Rust 编写的网易云音乐第三�
    认可或赞助。项目名称、商标及相关权益归各自权利人所有。
 2. **仅作学习研究**：本项目用于学习 Rust、iced、音频可视化与网络协议等技术的实践，
    不提供、不托管、不传播任何音乐、歌词、封面等受版权保护的内容。
-3. **接口来源**：所有数据均来自公开的网易云音乐 Web 端接口，可能随时调整、失效或触发风控。
-   使用即表示你同意自行遵守网易云音乐的用户协议及所在地法律法规。
+3. **接口来源**：所有数据均来自公开的网易云音乐 / 哔哩哔哩 Web 端接口，可能随时调整、失效或触发风控。
+   使用即表示你同意自行遵守对应平台的用户协议及所在地法律法规。
 4. **下载功能**：仅用于个人已获授权内容的离线收听，请勿用于复制、传播、出售或再分发受版权保护的作品。
 5. **账号安全**：登录仅使用你自己提供的 Cookie，程序不接触、不保存密码；Cookie 以 `0600` 权限保存在本地。
 6. **自担风险**：使用本项目产生的任何后果（包括但不限于账号风控、数据丢失、法律风险）均由使用者自行承担。
 7. **权利通知**：如权利人认为本项目侵犯其权益，请通过仓库 issue 联系维护者，我们会及时处理。
 
-## 截图
-
-登录（Cookie 方式）：
-
-![登录界面](docs/login.png)
-
-登录后可浏览自己的歌单与推荐内容：
-
-![首页](docs/home.png)
-
-![搜索结果](docs/search.png)
-
-![每日推荐](docs/daily.png)
-
-![私人FM](docs/fm.png)
-
-![歌手页](docs/artist.png)
-
-![歌单详情](docs/playlist.png)
-
-本地音乐（下载 + 音乐文件夹）与本地收藏：
-
-![本地音乐](docs/downloads.png)
-
-![我喜欢的音乐](docs/liked.png)
-
-点击任意歌曲即可播放，底部出现播放条；点播放条进入环形频谱页：
-
-![正在播放](docs/player.png)
-
 ## 功能
 
 ### 账号与资料
 
-- **Cookie 登录**：粘贴 `MUSIC_U` 或整段 Cookie，立即校验并进入首页。网易云对扫码登录的风控较严，
-  界面暂不展示二维码（`nm-api` 仍保留相关实现）。
-- **会话恢复**：启动时用本地 Cookie 校验登录态，失效则回到登录页。
-- **资料展示**：侧边栏顶部只显示账号头像与昵称（副标题固定为「网易云音乐」）；
+- **Cookie 登录**：没有账号时也会直接进入带侧边栏的主界面，两个渠道的登录页都嵌在内容区：
+  网易云在「网易云音乐」分组点「登录」，哔哩哔哩在「BiliBili」分组点「连接」。
+  两者使用同一套卡片布局与步骤说明，只是配色与凭证不同，互不影响。
+  网易云对扫码登录的风控较严，界面暂不展示二维码（`nm-api` 仍保留相关实现）。
+- **只登录哔哩哔哩**：不登录网易云也能进入主界面，启动后默认打开哔哩哔哩分区；
+  歌单、搜索、每日推荐与私人 FM 会提示先登录网易云，哔哩哔哩收藏夹不受影响。
+- **会话恢复**：启动时用本地 Cookie 校验登录态；网易云失效但哔哩哔哩仍有效时，
+  可以从侧边栏的哔哩哔哩账号卡直接进入。
+- **资料展示**：侧边栏按渠道展示账号卡——「网易云音乐」分组下是网易云头像、昵称与 UID，
+  「BiliBili」分组下是 B 站头像、昵称与 UID；未连接时卡片本身就是登录入口。
   签名、等级、VIP 与关注 / 粉丝数等字段目前不在界面展示。
-- **本地会话**：Cookie 与公开资料写入 `~/.config/melody/session.json`，Unix 权限 `0600`。
+- **本地会话**：网易云 Cookie 与资料写入 `~/.config/melody/session.json`，
+  哔哩哔哩写入 `~/.config/melody/bilibili.json`，Unix 权限均为 `0600`。
 
 ### 浏览与搜索
 
@@ -102,6 +79,19 @@ Montis（中文名：山音）是一个用 Rust 编写的网易云音乐第三�
   首页「全部歌单」里的「我喜欢的音乐」仍是云端歌单，只用于查看与播放云端收藏，不会与本地收藏混在一起。
 - **导入 / 导出**：收藏页可以把这份列表备份成 JSON（默认 `~/.config/melody/liked-export.json`，
   可改路径，支持 `~/`）；导入时与现有收藏合并、自动跳过已收藏的歌，也接受裸歌曲数组格式。
+
+### 哔哩哔哩收藏夹
+
+- **独立分区**：侧边栏「BiliBili」与网易云互不影响。点「BiliBili」分组里的连接卡，
+  内容区会显示独立的哔哩哔哩登录页（与网易云登录页同布局、粉色主题），
+  粘贴 `SESSDATA` 或整段 Cookie 即可连接；也可以直接点「粘贴」读取剪贴板。
+  登录态单独保存在 `~/.config/melody/bilibili.json`（权限 600）。
+- **收藏夹列表**：读取账号创建 / 默认收藏夹，展示封面、视频数与公开 / 私密状态。
+- **纯音频播放**：收藏夹内容按视频分页加载（每页 20 条，底部「加载更多」），
+  直接取 DASH 音轨，不打开视频页、不下载视频流；按接口返回的最高码率播放
+  （64K / 132K / 192K / 杜比 / Hi-Res）。
+- **完整复用播放器**：播放全部、随机、下一首、红心、下载、队列与本地缓存与网易云歌曲一致；
+  B 站音源不参与网易云的音质档位，切换音质不会重复下载。
 
 ### 播放
 
@@ -170,6 +160,8 @@ Montis（中文名：山音）是一个用 Rust 编写的网易云音乐第三�
   同一页面里还能开关音频缓存、调节上限、查看占用并清空缓存，并标注本地音乐独立存放的占用。
 - **关于页**：侧边栏底部入口，展示图标、Montis / 山音、版本、技术栈与本地数据位置，
   并提供项目地址（点击用系统浏览器打开 GitHub 仓库）；同时说明 Cookie、播放队列与偏好只保存在本机。
+- **侧边栏分组**：按渠道分为「网易云音乐 / BiliBili / 本地」三组，账号卡在各自分组顶部；
+  分组多了以后导航区可滚动，设置 / 关于固定在底部。
 - **统一导航**：侧边栏底部的设置 / 关于与上方导航使用同一套图标、字号、选中态与悬停反馈。
 - **无边框窗口**：页面直接铺满窗口，不再有顶部标题栏；最上方保留 12px 隐形拖拽区，
   最小化 / 关闭按钮悬浮在右上角；播放页会把可视化设置齿轮也收进同一枚半透明胶囊。
@@ -195,7 +187,7 @@ cargo build --release -p nm-app
 
 | 路径 | 内容 |
 | --- | --- |
-| `~/.config/melody/` | `session.json`（会话）、`liked.json`（本地收藏）、`player.json`（播放快照）、`library.json`（歌单快照）、`settings.json`（界面偏好与使用须知确认）、`visualizer.json`（频谱参数）、`music-folders.json`（音乐文件夹列表） |
+| `~/.config/melody/` | `session.json`（网易云会话）、`bilibili.json`（哔哩哔哩登录态）、`liked.json`（本地收藏）、`player.json`（播放快照）、`library.json`（歌单快照）、`settings.json`（界面偏好与使用须知确认）、`visualizer.json`（频谱参数）、`music-folders.json`（音乐文件夹列表） |
 | `~/.cache/melody/` | `audio/`（播放缓存）、`covers/`（封面缓存） |
 | `~/.local/share/melody/music/` | 用户主动下载的本地音乐（`index.json` + 音频文件） |
 
@@ -254,9 +246,10 @@ Release 构建已在 `Cargo.toml` 中开启 `lto = "thin"`、`codegen-units = 1`
 
 ```
 crates/
-  nm-core/   本地数据层：路径、Cookie 会话、用户资料模型
-  nm-api/    网易云接口层：weapi 加密、登录、搜索、歌单、歌手、推荐、播放地址
-  nm-audio/  音频层：rodio 播放线程、采样环形缓冲、FFT 频段分析
+  nm-core/   本地数据层：路径、Cookie 会话、用户资料模型、哔哩哔哩登录态
+  nm-api/    接口层：网易云 weapi 加密、搜索 / 歌单 / 歌手 / 推荐 / 播放地址；
+             哔哩哔哩 WBI 签名、收藏夹与 DASH 音频地址
+  nm-audio/  音频层：rodio 播放线程、MP4 解封装、采样环形缓冲、FFT 频段分析
   nm-app/    iced 界面与本地状态：页面、播放队列、下载、收藏、缓存、频谱可视化
 vendor/
   iced_winit/  打了输入法补丁的 iced_winit（见下方说明）
@@ -285,7 +278,7 @@ sequenceDiagram
     API->>NE: POST /weapi/w/nuser/account/get
     NE-->>API: profile
     API-->>App: Profile
-    App->>App: 写入 session.json → 首页
+    App->>App: 写入 session.json → 首页内容区
     App->>API: user_playlists(uid)
     API->>NE: POST /weapi/user/playlist
     NE-->>API: playlist[]
@@ -294,6 +287,10 @@ sequenceDiagram
 
 > `nm-api` 仍保留二维码登录与 8821 风控处理的实现（`qr_key` / `qr_check`），
 > 仅界面不再展示。当前账号遇到的是“账号环境风险”拦截，扫码无法绕过。
+>
+> 哔哩哔哩走另一套独立流程：在侧边栏「BiliBili」分组点「连接」，粘贴 `SESSDATA`
+> 或整段 Cookie，通过 `nav` 接口校验后写入 `bilibili.json`，直接进入收藏夹分区。
+> 两个渠道的登录态互不覆盖，可以只登其中一个。
 
 ### 播放与频谱
 
@@ -337,6 +334,9 @@ cargo test --workspace
 
 # 需要联网、会真实请求 music.163.com 的手工验证
 cargo test -p nm-api --test live -- --ignored --nocapture
+
+# 需要联网：B 站 WBI 签名与公开音频流
+cargo test -p nm-api --lib bilibili -- --ignored --nocapture
 ```
 
 ## 开发辅助
@@ -352,11 +352,12 @@ cargo test -p nm-api --test live -- --ignored --nocapture
 | `MELO_DEMO_PAGE=daily` | 仅 debug + demo：直接预览每日推荐页 |
 | `MELO_DEMO_PAGE=fm` | 仅 debug + demo：直接预览私人 FM 页 |
 | `MELO_DEMO_PAGE=artist` | 仅 debug + demo：直接预览歌手页 |
+| `MELO_DEMO_PAGE=bilibili` | 仅 debug + demo：直接预览哔哩哔哩连接页 |
 | `MELO_DEMO_PAGE=playlist` | 仅 debug + demo：直接预览歌单详情页 |
 | `MELO_DEMO_PAGE=liked` | 仅 debug + demo：直接预览「我喜欢的音乐」 |
 | `MELO_DEMO_PAGE=downloads` | 仅 debug + demo：直接预览「本地音乐」（带演示下载记录） |
 | `MELO_SHOW_PLAYER=1` | 仅 debug：demo 下直接进入正在播放页；配合 `MELO_SEARCH` + `MELO_AUTOPLAY` 时登录后进入播放页 |
-| `MELO_SHOW_DOCK=1` | 仅 debug：固定展开播放页的曲目信息与控制台（截图用） |
+| `MELO_SHOW_DOCK=1` | 仅 debug：固定展开播放页的曲目信息与控制台（布局调试用） |
 | `MELO_SHOW_QUEUE=1` | 仅 debug：启动时打开播放队列面板 |
 | `MELO_SHOW_QUALITY=1` | 仅 debug：启动时打开音质选择弹窗 |
 | `MELO_SHOW_SETTINGS=1` | 仅 debug：打开播放页右侧的可视化设置浮层 |
@@ -371,7 +372,7 @@ cargo test -p nm-api --test live -- --ignored --nocapture
 | `MELO_OPEN_ARTIST=<id>` | 仅 debug：登录后直接打开指定歌手页 |
 | `MELO_OPEN_LIKED=1` | 仅 debug：登录后直接打开「我喜欢的音乐」 |
 | `MELO_OPEN_DOWNLOADS=1` | 仅 debug：登录后直接打开「本地音乐」 |
-| `MELO_SEARCH=<关键词>` | 仅 debug：登录后直接发起搜索，便于截图真实结果 |
+| `MELO_SEARCH=<关键词>` | 仅 debug：登录后直接发起搜索，便于检查真实结果 |
 | `MELO_AUTOPLAY=1` | 仅 debug：配合 `MELO_SEARCH` 自动播放第一条结果 |
 | `MELO_DEBUG_JSON=/tmp/8821.json` | 扫码登录遇到 8821 风控时，把原始响应写入文件（`nm-api` 调试用） |
 
@@ -391,6 +392,8 @@ MELO_DEMO_USER=1 MELO_SHOW_PLAYER=1 MELO_SCREENSHOT=/tmp/player.png cargo run -p
 - 目前只在 Arch Linux + niri 桌面环境测试过，其他发行版 / 桌面环境未验证，也不打算做额外适配。
 - 播放采用「整首下载完成后开始播放」，长音频的首播等待时间受网络影响。
 - 需要有效的账号 Cookie；接口风控或服务端调整可能导致部分功能不可用。
+- 哔哩哔哩只支持收藏夹内的普通投稿视频（需要 `bvid` 与 `cid`）；番剧、直播、
+  已失效视频会直接跳过，也不会上报播放进度。
 - 歌词、排行榜、歌单广场尚未实现。
 - 输入法只写入最终上屏文字：候选窗正常可用，但拼音 / 组字过程不会在输入框里内联显示。
 - 本地音乐文件夹目前每次启动都会重新扫描，超大曲库的加载时间取决于磁盘速度；

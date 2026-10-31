@@ -8,17 +8,23 @@
 //!
 //! 所有接口都直接请求 `music.163.com`，不依赖本地 Node 服务。
 
+mod bilibili;
 mod client;
 mod crypto;
 mod models;
 
+pub use bilibili::{
+    parse_cookie_input as parse_bilibili_cookie_input, BiliAudio, BiliFolder, BiliFolderPage,
+    BiliUser, BilibiliClient, FOLDER_PAGE_SIZE,
+};
 pub use client::{NeteaseClient, QrLogin, QrStatus, QrVerify, UserStats, VerifyQr, VerifyStatus};
 pub use crypto::{weapi, WeapiParams};
 pub use models::{
-    format_duration, sized_cover, Album, Artist, ArtistDetail, Creator, PlaylistDetail,
-    PlaylistSummary, SearchPage, Song, SongUrl,
+    bilibili_song_id, format_duration, is_bilibili_id, is_bilibili_url, sized_cover, Album, Artist,
+    ArtistDetail, Creator, PlaylistDetail, PlaylistSummary, SearchPage, Song, SongUrl, Source,
+    BILIBILI_ID_OFFSET,
 };
-pub use nm_core::{Profile, Session};
+pub use nm_core::{BilibiliSession, Profile, Session};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {

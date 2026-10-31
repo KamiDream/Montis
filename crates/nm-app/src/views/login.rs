@@ -7,136 +7,52 @@ use crate::app::{App, Element, Message};
 use crate::theme;
 use crate::widgets::{self, PillKind};
 
-pub fn view(app: &App) -> Element<'_> {
-    container(
-        row![brand_card(app), login_card(app)]
-            .spacing(22)
-            .align_y(Alignment::Center),
+/// 哔哩哔哩品牌粉：步骤序号、提示卡描边都用它。
+fn bili_pink() -> Color {
+    Color::from_rgb(0.976, 0.376, 0.545)
+}
+
+/// 网易云登录卡片：只处理网易云。
+pub(crate) fn netease_card(app: &App) -> Element<'_> {
+    card(
+        "连接你的网易云账号",
+        "粘贴浏览器里的 Cookie，无需在客户端输入密码",
+        "只校验 MUSIC_U 凭证",
+        theme::ACCENT,
+        cookie_panel(app),
     )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
-    .padding(28)
-    .into()
 }
 
-fn brand_card(app: &App) -> Element<'_> {
-    let logo_tile = container(widgets::logo(54.0))
-        .padding(8)
-        .style(|_| container::Style {
-            background: Some(Background::Color(Color::WHITE)),
-            border: border::rounded(20.0),
-            ..container::Style::default()
-        });
-
-    let features = column![
-        widgets::feature_line_dark("Cookie 登录，不接触账号密码"),
-        widgets::feature_line_dark("会话保存在本地，权限 600"),
-        widgets::feature_line_dark("为播放与频谱可视化而生"),
-    ]
-    .spacing(9);
-
-    let badges = row![
-        widgets::brand_pill("v0.1.0"),
-        widgets::brand_pill("本地优先"),
-    ]
-    .spacing(6);
-
-    let spectrum_header = row![
-        widgets::pulse_dot(Color::from_rgba(1.0, 1.0, 1.0, 0.95), app.phase, 7.0),
-        text("VISUAL SPECTRUM").size(9).color(theme::WHITE_70),
-        horizontal_space(),
-        text("PREVIEW")
-            .size(9)
-            .color(Color::from_rgba(1.0, 1.0, 1.0, 0.45)),
-    ]
-    .spacing(7)
-    .align_y(Alignment::Center);
-
-    let body = column![
-        logo_tile,
-        column![
-            text("Montis").size(32).color(Color::WHITE),
-            text("山音 · 网易云音乐客户端")
-                .size(12)
-                .color(theme::WHITE_70),
-        ]
-        .spacing(3),
-        container(row![])
-            .width(Length::Fill)
-            .height(1)
-            .style(|_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.18))),
-                ..container::Style::default()
-            }),
-        features,
-        vertical_space(),
-        spectrum_header,
-        widgets::equalizer(app.phase, 24, 3.5, 44.0, Color::WHITE),
-        badges,
-    ]
-    .spacing(10)
-    .width(Length::Fill)
-    .height(Length::Fill);
-
-    container(iced::widget::stack![
-        container(brand_orbit())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Alignment::End)
-            .align_y(Alignment::Start),
-        body,
-    ])
-    .width(Length::Fixed(310.0))
-    .height(Length::Fixed(500.0))
-    .padding(28)
-    .style(theme::brand_card)
-    .into()
+/// 哔哩哔哩登录卡片：与网易云同一套布局，表单与配色换成自己的。
+pub(crate) fn bili_card(app: &App) -> Element<'_> {
+    card(
+        "连接你的哔哩哔哩账号",
+        "只登录收藏夹也能使用，播放时不会打开视频",
+        "只校验 SESSDATA 凭证",
+        bili_pink(),
+        bili_cookie_panel(app),
+    )
 }
 
-/// 品牌卡右上角的装饰圆环。
-fn brand_orbit<'a>() -> Element<'a> {
-    let ring = |size: f32, alpha: f32| {
-        container(row![])
-            .width(size)
-            .height(size)
-            .style(move |_| container::Style {
-                border: border::rounded(size * 0.5)
-                    .width(1.0)
-                    .color(Color::from_rgba(1.0, 1.0, 1.0, alpha)),
-                ..container::Style::default()
-            })
-    };
-
-    container(iced::widget::stack![
-        ring(260.0, 0.055),
-        ring(180.0, 0.075),
-        ring(104.0, 0.10),
-    ])
-    .padding(Padding {
-        top: 0.0,
-        right: 0.0,
-        bottom: 0.0,
-        left: 0.0,
-    })
-    .into()
-}
-
-fn login_card(app: &App) -> Element<'_> {
+/// 两个渠道共用的登录卡外壳：标题、分割线、表单与底部隐私说明。
+fn card<'a>(
+    title: &'a str,
+    subtitle: &'a str,
+    credentials: &'static str,
+    accent: Color,
+    panel: Element<'a>,
+) -> Element<'a> {
     let header = column![
         row![
             column![
                 row![
-                    widgets::dot(theme::ACCENT, 5.0),
+                    widgets::dot(accent, 5.0),
                     text("SIGN IN").size(9).color(theme::DIM2),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
-                text("连接你的网易云账号").size(22).color(theme::FG),
-                text("粘贴浏览器里的 Cookie，无需在客户端输入密码")
-                    .size(11)
-                    .color(theme::DIM),
+                text(title).size(22).color(theme::FG),
+                text(subtitle).size(11).color(theme::DIM),
             ]
             .spacing(4),
             horizontal_space(),
@@ -148,7 +64,7 @@ fn login_card(app: &App) -> Element<'_> {
     .spacing(10);
 
     container(
-        column![header, cookie_panel(app), vertical_space(), guarantees(),]
+        column![header, panel, vertical_space(), guarantees(credentials)]
             .spacing(16)
             .height(Length::Fill),
     )
@@ -160,8 +76,8 @@ fn login_card(app: &App) -> Element<'_> {
 }
 
 /// 登录卡底部的本地隐私说明。
-fn guarantees<'a>() -> Element<'a> {
-    let tile = |title: &'a str, detail: &'a str, color: Color| {
+fn guarantees(credentials: &'static str) -> Element<'static> {
+    let tile = |title: &'static str, detail: &'static str, color: Color| {
         container(
             column![
                 row![
@@ -181,13 +97,14 @@ fn guarantees<'a>() -> Element<'a> {
 
     row![
         tile("仅本机存储", "Cookie 写入本地会话文件", theme::ACCENT),
-        tile("不接触密码", "只校验 MUSIC_U 凭证", theme::VIOLET),
+        tile("不接触密码", credentials, theme::VIOLET),
         tile("会话可撤回", "退出登录即清空凭证", theme::OK),
     ]
     .spacing(8)
     .into()
 }
 
+/// 网易云表单：获取 MUSIC_U 的步骤 + 输入框 + 登录按钮。
 fn cookie_panel(app: &App) -> Element<'_> {
     let steps = container(
         column![
@@ -197,9 +114,17 @@ fn cookie_panel(app: &App) -> Element<'_> {
                 widgets::pill("3 步", PillKind::Muted),
             ]
             .align_y(Alignment::Center),
-            guide_row("1", "在浏览器登录 music.163.com"),
-            guide_row("2", "开发者工具 → Application → Cookies"),
-            guide_row("3", "复制 MUSIC_U，或点「粘贴」导入整段 Cookie"),
+            step_row("1", "在浏览器登录 music.163.com", theme::button_gradient()),
+            step_row(
+                "2",
+                "开发者工具 → Application → Cookies",
+                theme::button_gradient()
+            ),
+            step_row(
+                "3",
+                "复制 MUSIC_U，或点「粘贴」导入整段 Cookie",
+                theme::button_gradient()
+            ),
         ]
         .spacing(7),
     )
@@ -269,15 +194,111 @@ fn cookie_panel(app: &App) -> Element<'_> {
     column![steps, input, action, footer].spacing(12).into()
 }
 
-fn guide_row<'a>(index: &'a str, value: &'a str) -> Element<'a> {
+/// 哔哩哔哩表单：获取 SESSDATA 的步骤 + 输入框 + 连接按钮。
+fn bili_cookie_panel(app: &App) -> Element<'_> {
+    let steps = container(
+        column![
+            row![
+                text("获取 Cookie").size(10).color(theme::ACCENT_DARK),
+                horizontal_space(),
+                widgets::pill("仅需 SESSDATA", PillKind::Muted),
+            ]
+            .align_y(Alignment::Center),
+            step_row(
+                "1",
+                "在浏览器登录 bilibili.com",
+                Background::Color(bili_pink())
+            ),
+            step_row(
+                "2",
+                "开发者工具 → Application → Cookies",
+                Background::Color(bili_pink())
+            ),
+            step_row(
+                "3",
+                "复制 SESSDATA，或点「粘贴」导入整段 Cookie",
+                Background::Color(bili_pink())
+            ),
+        ]
+        .spacing(7),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([12, 14]))
+    .style(|_| container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.996, 0.961, 0.973))),
+        border: border::rounded(11.0)
+            .width(1.0)
+            .color(Color::from_rgba(0.976, 0.376, 0.545, 0.18)),
+        ..container::Style::default()
+    });
+
+    let input = text_input(
+        "SESSDATA=...; bili_jct=...",
+        app.bili_state.cookie_input.as_str(),
+    )
+    .on_input(Message::BiliCookieChanged)
+    .on_submit(Message::BiliConnect)
+    .padding(11)
+    .size(12)
+    .width(Length::Fill)
+    .style(theme::input);
+
+    let paste = button(text("粘贴").size(11).color(theme::FG))
+        .on_press(Message::BiliPasteCookie)
+        .padding(Padding::from([11, 14]))
+        .style(theme::ghost);
+
+    let input = row![input, paste].spacing(8).align_y(Alignment::Center);
+
+    let action: Element<'_> = if app.bili_state.connecting {
+        button(
+            row![
+                widgets::spinner(app.phase, 2.5, iced::Color::WHITE),
+                text("正在校验 Cookie…").size(13).color(iced::Color::WHITE),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding(Padding::from([10, 16]))
+        .style(theme::bili_primary)
+        .into()
+    } else {
+        button(
+            row![
+                widgets::svg_icon(widgets::ICON_BILIBILI, 13.0, iced::Color::WHITE),
+                text("连接哔哩哔哩").size(13).color(iced::Color::WHITE),
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::BiliConnect)
+        .padding(Padding::from([10, 16]))
+        .style(theme::bili_primary)
+        .into()
+    };
+
+    let action = container(action)
+        .width(Length::Fill)
+        .align_x(Alignment::Center);
+
+    let footer: Element<'_> = match &app.bili_state.connect_error {
+        Some(error) => widgets::error_text(error.clone()),
+        None => widgets::hint("SESSDATA 等同于登录凭证，只会保存在本机（权限 600）。"),
+    };
+
+    column![steps, input, action, footer].spacing(12).into()
+}
+
+/// 步骤序号：白色数字 + 渠道色圆角底。
+fn step_row<'a>(index: &'a str, value: &'a str, background: Background) -> Element<'a> {
     row![
         container(text(index).size(10).color(Color::WHITE))
             .width(18)
             .height(18)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
-            .style(|_| container::Style {
-                background: Some(theme::button_gradient()),
+            .style(move |_| container::Style {
+                background: Some(background),
                 border: border::rounded(9.0),
                 ..container::Style::default()
             }),

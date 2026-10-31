@@ -338,17 +338,29 @@ fn load(sink: &Sink, shared: &Arc<Shared>, bytes: Vec<u8>) {
     sink.stop();
     shared.reset_spectrum();
 
-    let decoder = match Decoder::new(Cursor::new(bytes)) {
-        Ok(decoder) => decoder,
-        Err(error) => {
-            shared.fail(format!("无法解码这首歌曲：{error}"));
-            return;
+    // 网易云的 mp3 / flac 继续交给 rodio；B 站的 DASH 音轨（fMP4）需要
+    // 自己构造 symphonia 数据源，否则 rodio 会因为报不出文件长度而解码失败。
+    let source: Box<dyn Source<Item = f32> + Send> = if crate::mp4::is_mp4(&bytes) {
+        match crate::mp4::Mp4Source::open(bytes) {
+            Ok(source) => Box::new(source),
+            Err(error) => {
+                shared.fail(format!("无法解码这首歌曲：{error}"));
+                return;
+            }
+        }
+    } else {
+        match Decoder::new(Cursor::new(bytes)) {
+            Ok(decoder) => Box::new(decoder.convert_samples::<f32>()),
+            Err(error) => {
+                shared.fail(format!("无法解码这首歌曲：{error}"));
+                return;
+            }
         }
     };
 
-    let channels = decoder.channels() as u32;
-    let sample_rate = decoder.sample_rate();
-    let duration = decoder.total_duration().unwrap_or_default();
+    let channels = source.channels() as u32;
+    let sample_rate = source.sample_rate();
+    let duration = source.total_duration().unwrap_or_default();
 
     shared.channels.store(channels, Ordering::Relaxed);
     shared.sample_rate.store(sample_rate, Ordering::Relaxed);
@@ -357,10 +369,7 @@ fn load(sink: &Sink, shared: &Arc<Shared>, bytes: Vec<u8>) {
         .store(duration.as_millis() as u64, Ordering::Relaxed);
     *shared.error.lock().unwrap() = None;
 
-    sink.append(Tap::new(
-        decoder.convert_samples::<f32>(),
-        Arc::clone(shared),
-    ));
+    sink.append(Tap::new(source, Arc::clone(shared)));
     sink.play();
     shared.set_state(State::Playing);
 }

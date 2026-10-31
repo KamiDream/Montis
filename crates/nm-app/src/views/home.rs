@@ -4,7 +4,7 @@ use iced::widget::{
 };
 use iced::{border, mouse, Alignment, Background, ContentFit, Length, Padding};
 
-use nm_api::{ArtistDetail, PlaylistDetail, PlaylistSummary, Song};
+use nm_api::{ArtistDetail, BiliFolder, PlaylistDetail, PlaylistSummary, Song};
 
 use crate::app::{App, Element, LikedTransferKind, Message, PlaylistState, ScrollArea};
 use crate::audio_cache::{format_bytes, MB};
@@ -46,8 +46,6 @@ pub fn view(app: &App) -> Element<'_> {
 }
 
 fn sidebar(app: &App) -> Element<'_> {
-    let user = user_card(app);
-
     // 本地「我喜欢的音乐」是一个独立页面：打开它时不能同时把「我的歌单」点亮。
     let liked_active = app
         .playlist
@@ -70,6 +68,8 @@ fn sidebar(app: &App) -> Element<'_> {
         && !app.search_page
         && !app.daily_page
         && !app.fm_page
+        && !app.bili_page
+        && !app.netease_login_page
         && app.artist.is_none();
     let discover = nav_item(
         "我的歌单",
@@ -103,6 +103,14 @@ fn sidebar(app: &App) -> Element<'_> {
         Message::OpenFm,
     );
 
+    let bilibili = nav_item(
+        "哔哩哔哩",
+        "收藏夹 · 纯音频",
+        widgets::ICON_BILIBILI,
+        app.bili_page,
+        Message::OpenBilibili,
+    );
+
     let liked = nav_item(
         "我喜欢的音乐",
         "本地收藏",
@@ -119,27 +127,53 @@ fn sidebar(app: &App) -> Element<'_> {
         Message::OpenDownloads,
     );
 
-    // 音乐库分组：进入某张歌单时，在「我的歌单」下方挂一个缩进的子节点，
-    // 把当前打开的是哪张歌单也写出来。
-    let mut library = column![sidebar_label("音乐库", None), discover].spacing(8);
+    // 网易云分组：账号卡片放在分组标题下，歌单与在线推荐都在这组。
+    // 进入某张歌单时，在「我的歌单」下方挂一个缩进的子节点，把当前
+    // 打开的是哪张歌单也写出来。
+    let mut library =
+        column![sidebar_label("网易云音乐", None), user_card(app), discover].spacing(8);
     if let Some(name) = current_playlist_name(app) {
-        // 喜欢的音乐 / 本地音乐自己有入口，不再重复一层子节点。
-        if !liked_active && !downloads_active {
+        // 我的歌单 / 喜欢的音乐 / 本地音乐 / 哔哩哔哩收藏夹都有自己的入口，
+        // 不再重复一层子节点。
+        if !liked_active && !downloads_active && !app.bili_page {
             library = library.push(current_playlist_row(&name));
         }
     }
-    library = library.push(liked);
-    library = library.push(downloads);
     library = library.push(daily);
     library = library.push(fm);
+    library = library.push(search);
+
+    // 哔哩哔哩是独立的「外部渠道」，不跟本地音乐库混在一起，
+    // 单独开一个分组，账号与收藏夹入口都在这个分组下。
+    let bilibili = column![
+        sidebar_label("BiliBili", None),
+        bili_user_card(app),
+        bilibili
+    ]
+    .spacing(8);
+
+    // 本地分组：红心收藏与下载都只存在本机，放在最下面一组。
+    let local = column![sidebar_label("本地", None), liked, downloads].spacing(8);
+
+    // 分组多了以后在小窗口里可能放不下：导航区可以滚动，
+    // 设置 / 关于固定在底部，不会跟着被挤出窗口。
+    let navigation = column![
+        library,
+        widgets::vspace(4.0),
+        bilibili,
+        widgets::vspace(4.0),
+        local,
+    ]
+    .spacing(8)
+    .width(Length::Fill);
 
     container(
         column![
-            user,
             widgets::vspace(6.0),
-            search,
-            library,
-            vertical_space().height(Length::Fill),
+            scrollable(navigation)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(theme::scrollable_hidden),
             widgets::separator(),
             settings_card(app),
             about_card(app),
@@ -245,24 +279,52 @@ fn about_card(app: &App) -> Element<'_> {
 }
 
 fn user_card(app: &App) -> Element<'_> {
-    let (name, subtitle) = match &app.profile {
-        Some(profile) => (profile.display_name().to_string(), "网易云音乐"),
-        None => ("未登录".to_string(), "网易云音乐"),
+    // 未登录时这张卡就是入口：在内容区打开网易云登录面板。
+    let Some(profile) = &app.profile else {
+        return mouse_area(
+            container(
+                row![
+                    netease_avatar(app, 34.0),
+                    column![
+                        text("未登录网易云").size(12).color(theme::FG),
+                        text("登录后同步歌单").size(9).color(theme::DIM2),
+                    ]
+                    .spacing(1),
+                    horizontal_space(),
+                    text("登录").size(11).color(theme::ACCENT),
+                ]
+                .spacing(9)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding(Padding::from([10, 11]))
+            .style(theme::user_tile),
+        )
+        .on_press(Message::OpenLogin)
+        .interaction(mouse::Interaction::Pointer)
+        .into();
+    };
+
+    let name = profile.display_name().to_string();
+    let subtitle = if profile.user_id > 0 {
+        format!("UID {}", profile.user_id)
+    } else {
+        "网易云音乐".to_string()
     };
 
     container(
         row![
-            widgets::avatar(app, 34.0),
+            netease_avatar(app, 34.0),
             column![
                 text(name).size(12).color(theme::FG),
                 text(subtitle).size(9).color(theme::DIM2),
             ]
             .spacing(1),
             horizontal_space(),
-            button(widgets::svg_icon(widgets::ICON_EXIT, 13.0, theme::DIM))
+            button(text("退出").size(11).color(theme::DIM))
                 .on_press(Message::Logout)
-                .padding(Padding::from([6, 7]))
-                .style(theme::icon),
+                .padding(Padding::from([6, 10]))
+                .style(theme::ghost),
         ]
         .spacing(9)
         .align_y(Alignment::Center),
@@ -271,6 +333,29 @@ fn user_card(app: &App) -> Element<'_> {
     .padding(Padding::from([10, 11]))
     .style(theme::user_tile)
     .into()
+}
+
+/// 网易云头像：已登录用真头像，未登录时先放一个「网」字占位。
+fn netease_avatar(app: &App, size: f32) -> Element<'_> {
+    if app.profile.is_none() {
+        return avatar_placeholder("网".to_string(), size, theme::ACCENT);
+    }
+    widgets::avatar(app, size)
+}
+
+/// 头像还没到手时的占位圆：一个首字 + 渠道色，尺寸与真头像一致。
+fn avatar_placeholder(letter: String, size: f32, color: iced::Color) -> Element<'static> {
+    container(text(letter).size(size * 0.40).color(iced::Color::WHITE))
+        .width(size)
+        .height(size)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(color)),
+            border: border::rounded(size * 0.5),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 fn nav_item(
@@ -287,7 +372,9 @@ fn nav_item(
 }
 
 fn main(app: &App) -> Element<'_> {
-    let content: Element<'_> = if app.artist.is_some() {
+    let content: Element<'_> = if app.bili_page {
+        bili_page(app)
+    } else if app.artist.is_some() {
         artist_page(app)
     } else if app.settings_page {
         settings_page(app)
@@ -303,6 +390,8 @@ fn main(app: &App) -> Element<'_> {
         match &app.playlist {
             // 歌单页自己处理滚动：标题卡片固定，只有歌曲列表滚动。
             Some(state) => playlist_page(app, state),
+            // 没有任何账号时，内容区直接是网易云登录面板（侧边栏仍可用）。
+            None if app.netease_login_page => netease_login_page(app),
             // 我的歌单页同理：标题与「全部歌单」行固定，只有歌单网格滚动。
             None => discover_page(app),
         }
@@ -312,6 +401,21 @@ fn main(app: &App) -> Element<'_> {
         .width(Length::Fill)
         .height(Length::Fill)
         .padding(Padding::from([18, 22]))
+        .into()
+}
+
+/// 网易云登录面板：不再切到独立登录屏，侧边栏始终可用。
+fn netease_login_page(app: &App) -> Element<'_> {
+    centered_login(crate::views::login::netease_card(app))
+}
+
+/// 内容区居中的登录卡：网易云与哔哩哔哩共用。
+fn centered_login<'a>(card: Element<'a>) -> Element<'a> {
+    container(card)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
         .into()
 }
 
@@ -421,7 +525,7 @@ fn about_page(app: &App) -> Element<'_> {
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
-                text("山音 · 网易云音乐桌面客户端")
+                text("山音 · 网易云 / 哔哩哔哩客户端")
                     .size(12)
                     .color(theme::WHITE_82),
                 text("为播放与频谱可视化而生的本地优先客户端。")
@@ -462,7 +566,7 @@ fn about_page(app: &App) -> Element<'_> {
             widgets::section_title("技术栈"),
             info_line("界面", "Rust · iced 0.13，自绘窗口与平铺卡片"),
             info_line("音频", "rodio 解码与输出，rustfft 做实时频谱分析"),
-            info_line("接口", "网易云 weapi，与网页端一致的加密方式"),
+            info_line("接口", "网易云 weapi / 哔哩哔哩 Web 接口与 WBI 签名"),
             info_line(
                 "数据",
                 "~/.config/melody/ 存会话与偏好，~/.cache/melody/ 存音频与封面缓存，\
@@ -1126,6 +1230,215 @@ fn fm_play_all(disabled: bool) -> Element<'static> {
     }
 }
 
+/// 哔哩哔哩分区：未连接时展示 Cookie 表单；连接后展示收藏夹，
+/// 点开收藏夹复用歌单页的虚拟化列表与播放逻辑。
+fn bili_page(app: &App) -> Element<'_> {
+    if let Some(state) = app.playlist.as_ref().filter(|state| state.bilibili) {
+        return playlist_page(app, state);
+    }
+
+    // 未连接时和网易云登录页一致：内容区只有一张居中的登录卡。
+    if !app.bili_session.is_logged_in() {
+        return centered_login(crate::views::login::bili_card(app));
+    }
+
+    let mut header = column![
+        widgets::vspace(26.0),
+        widgets::title_bar("哔哩哔哩", "收藏夹里的视频当音频听，不需要打开视频页面",),
+    ]
+    .spacing(16);
+
+    if let Some(warning) = &app.storage_error {
+        header = header.push(widgets::error_text(warning.clone()));
+    }
+
+    column![header, bili_folders(app)]
+        .spacing(16)
+        .height(Length::Fill)
+        .into()
+}
+
+fn bili_folders(app: &App) -> Element<'_> {
+    let folders = &app.bili_state.folders;
+    // 账号卡片已经在侧边栏展示，这里只放列表标题。
+    let head = row![
+        widgets::section_title("我的收藏夹"),
+        widgets::pill(format!("{} 个", folders.len()), PillKind::Muted),
+        horizontal_space(),
+        widgets::refresh_button(
+            app.bili_state.folders_busy,
+            app.phase,
+            Message::ReloadBiliFolders,
+        ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let mut body = column![head].spacing(14);
+
+    if let Some(error) = &app.bili_state.folders_error {
+        body = body.push(widgets::card(
+            column![
+                widgets::error_text(error.clone()),
+                link("重新加载", theme::ACCENT, Message::ReloadBiliFolders),
+            ]
+            .spacing(8),
+        ));
+    }
+
+    let grid: Element<'_> = if app.bili_state.folders_busy && folders.is_empty() {
+        widgets::card(
+            row![
+                widgets::spinner(app.phase, 3.5, theme::ACCENT),
+                widgets::hint("正在读取收藏夹…"),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        )
+    } else if folders.is_empty() {
+        widgets::card(widgets::hint(
+            "还没有收藏夹。先在 bilibili.com 收藏几个视频，再回来刷新。",
+        ))
+    } else {
+        let available = (app.viewport.width - 250.0 - 44.0 - 12.0).max(220.0);
+        let (columns, card_width) = grid_metrics(available, folders.len());
+        let mut grid = column![].spacing(14.0);
+        for chunk in folders.chunks(columns) {
+            let mut cards = row![].spacing(14.0);
+            for folder in chunk {
+                cards = cards.push(bili_folder_card(app, folder, card_width));
+            }
+            grid = grid.push(cards);
+        }
+        scrollable(container(grid).width(Length::Fill).padding(Padding {
+            top: 2.0,
+            right: 12.0,
+            bottom: 16.0,
+            left: 0.0,
+        }))
+        .height(Length::Fill)
+        .on_scroll(|_| Message::Scrolled(ScrollArea::Library))
+        .style(theme::scrollable_auto(
+            app.scroll_opacity(ScrollArea::Library),
+        ))
+        .into()
+    };
+
+    body = body.push(grid);
+    body.height(Length::Fill).into()
+}
+
+fn bili_user_card(app: &App) -> Element<'_> {
+    // 未连接时这张卡就是入口：点开哔哩哔哩页粘贴 Cookie。
+    if !app.bili_session.is_logged_in() {
+        return mouse_area(
+            container(
+                row![
+                    bili_avatar(app, 34.0),
+                    column![
+                        text("未连接哔哩哔哩").size(12).color(theme::FG),
+                        text("登录后听收藏夹").size(9).color(theme::DIM2),
+                    ]
+                    .spacing(1),
+                    horizontal_space(),
+                    text("连接").size(11).color(theme::ACCENT),
+                ]
+                .spacing(9)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding(Padding::from([10, 11]))
+            .style(theme::user_tile),
+        )
+        .on_press(Message::OpenBilibili)
+        .interaction(mouse::Interaction::Pointer)
+        .into();
+    }
+
+    let name = if app.bili_session.name.is_empty() {
+        "哔哩哔哩用户"
+    } else {
+        app.bili_session.name.as_str()
+    };
+    let subtitle = if app.bili_session.mid > 0 {
+        format!("UID {}", app.bili_session.mid)
+    } else {
+        "哔哩哔哩".to_string()
+    };
+
+    container(
+        row![
+            bili_avatar(app, 34.0),
+            column![
+                text(name).size(12).color(theme::FG),
+                text(subtitle).size(9).color(theme::DIM2),
+            ]
+            .spacing(1),
+            horizontal_space(),
+            button(text("退出").size(11).color(theme::DIM))
+                .on_press(Message::BiliLogout)
+                .padding(Padding::from([6, 10]))
+                .style(theme::ghost),
+        ]
+        .spacing(9)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([10, 11]))
+    .style(theme::user_tile)
+    .into()
+}
+
+/// 哔哩哔哩头像：复用封面缓存，600 尺寸会额外生成圆形版本；
+/// 图还没下载完时先显示昵称首字，尺寸不会跳。
+fn bili_avatar(app: &App, size: f32) -> Element<'_> {
+    let url = nm_api::sized_cover(&app.bili_session.face, 600);
+    let handle = app.circle_covers.get(&url).or_else(|| app.covers.get(&url));
+    if let Some(handle) = handle {
+        return image(handle.clone())
+            .width(size)
+            .height(size)
+            .content_fit(ContentFit::Fill)
+            .into();
+    }
+
+    let initial = app
+        .bili_session
+        .name
+        .chars()
+        .next()
+        .map(|letter| letter.to_string())
+        .unwrap_or_else(|| "B".to_string());
+    avatar_placeholder(initial, size, iced::Color::from_rgb(0.976, 0.376, 0.545))
+}
+
+fn bili_folder_card<'a>(app: &'a App, folder: &'a BiliFolder, width: f32) -> Element<'a> {
+    let cover_size = (width - 24.0).max(120.0);
+    let art = cover_with_badge(app, &folder.cover(300), cover_size, &folder.title);
+
+    let body = column![
+        art,
+        text(clip(&folder.title, 16)).size(13).color(theme::FG),
+        row![
+            widgets::pill(format!("{} 个视频", folder.media_count), PillKind::Muted),
+            if folder.attr == 0 {
+                widgets::pill("公开", PillKind::Ok)
+            } else {
+                widgets::pill("私密", PillKind::Warn)
+            },
+        ]
+        .spacing(6),
+    ]
+    .spacing(9);
+
+    button(body)
+        .on_press(Message::OpenBiliFolder(folder.id))
+        .width(Length::Fixed(width))
+        .padding(12)
+        .style(theme::playlist_card)
+        .into()
+}
+
 /// 歌手页：头像 + 简介固定在上方，歌曲列表单独滚动。
 fn artist_page(app: &App) -> Element<'_> {
     let Some(state) = &app.artist else {
@@ -1543,9 +1856,26 @@ fn library_grid(app: &App) -> Element<'_> {
         ));
     }
     if items.is_empty() {
-        body = body.push(widgets::card(widgets::hint(
-            "还没有歌单。登录后创建或收藏的歌单会出现在这里。",
-        )));
+        if app.profile.is_none() {
+            body = body.push(widgets::card(
+                column![
+                    widgets::hint("还没有登录网易云，歌单需要登录后才能加载。"),
+                    widgets::hint(
+                        "可以从左侧「哔哩哔哩」听收藏夹，或登录网易云后使用歌单、搜索、每日推荐与私人 FM。"
+                    ),
+                    row![widgets::primary_button(
+                        "登录网易云",
+                        None,
+                        Message::OpenLogin
+                    )],
+                ]
+                .spacing(10),
+            ));
+        } else {
+            body = body.push(widgets::card(widgets::hint(
+                "还没有歌单。登录后创建或收藏的歌单会出现在这里。",
+            )));
+        }
     } else {
         body = body.push(grid);
     }
@@ -1633,13 +1963,19 @@ fn cover_with_badge<'a>(app: &App, url: &str, size: f32, label: &str) -> Element
 }
 
 fn playlist_page<'a>(app: &'a App, state: &'a PlaylistState) -> Element<'a> {
+    let loading_text = if state.bilibili {
+        "正在读取收藏夹…"
+    } else {
+        "正在加载歌单详情…"
+    };
+
     if state.busy {
         let content = column![
             widgets::vspace(14.0),
             widgets::card(
                 row![
                     widgets::spinner(app.phase, 4.0, theme::ACCENT),
-                    widgets::hint("正在加载歌单详情…"),
+                    widgets::hint(loading_text),
                 ]
                 .spacing(12)
                 .align_y(Alignment::Center),
@@ -1650,12 +1986,17 @@ fn playlist_page<'a>(app: &'a App, state: &'a PlaylistState) -> Element<'a> {
     }
 
     if let Some(error) = &state.error {
+        let retry = if state.bilibili {
+            Message::OpenBiliFolder(state.id)
+        } else {
+            Message::OpenPlaylist(state.id)
+        };
         let content = column![
             widgets::vspace(14.0),
             widgets::card(
                 column![
                     widgets::error_text(error.clone()),
-                    link("重试", theme::ACCENT, Message::OpenPlaylist(state.id)),
+                    link("重试", theme::ACCENT, retry),
                 ]
                 .spacing(8),
             ),
@@ -1726,6 +2067,7 @@ fn playlist_header<'a>(
 ) -> Element<'a> {
     let local = state.local_liked;
     let downloaded = state.local_downloads;
+    let bilibili = state.bilibili;
     let cover_size = 158.0;
     // 本地收藏的标题卡用账号头像；普通歌单 / 本地音乐用歌曲封面。
     let art: Element<'a> = if local {
@@ -1738,6 +2080,8 @@ fn playlist_header<'a>(
         (theme::LIKE, "LOCAL")
     } else if downloaded {
         (theme::ACCENT, "LOCAL")
+    } else if bilibili {
+        (theme::ACCENT, "BILIBILI")
     } else {
         (theme::ACCENT, "PLAYLIST")
     };
@@ -1868,6 +2212,17 @@ fn playlist_header<'a>(
         .spacing(7)
         .align_y(Alignment::Center)
         .into()
+    } else if bilibili {
+        row![
+            text("哔哩哔哩收藏夹").size(12).color(theme::DIM),
+            text("·").size(11).color(theme::LINE),
+            text(format!("{} 首", detail.track_count))
+                .size(12)
+                .color(theme::DIM),
+        ]
+        .spacing(7)
+        .align_y(Alignment::Center)
+        .into()
     } else {
         row![
             text(format!("by {}", detail.creator_name()))
@@ -1988,6 +2343,10 @@ fn track_list<'a>(
     if bottom > 0.0 {
         rows = rows.push(vertical_space().height(bottom));
     }
+    // 哔哩哔哩收藏夹接口按页返回，滚到底部可以继续加载下一页。
+    if state.bilibili && state.bili_has_more {
+        rows = rows.push(bili_more_row(state.bili_busy, app.phase));
+    }
 
     // 列标题固定在滚动区外，列表滚动时依然能对照专辑与时长。
     let header = list_header(track_header(state.local_downloads));
@@ -2033,6 +2392,31 @@ fn track_list<'a>(
     }
 
     content.into()
+}
+
+/// 收藏夹列表底部的「加载更多」：B 站接口每页 20 条。
+fn bili_more_row(busy: bool, phase: f32) -> Element<'static> {
+    let content: Element<'static> = if busy {
+        row![
+            widgets::spinner(phase, 3.0, theme::ACCENT),
+            widgets::hint("正在加载更多…"),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        button(text("加载更多").size(12).color(theme::ACCENT_DARK))
+            .on_press(Message::LoadMoreBiliFolder)
+            .padding(Padding::from([9, 18]))
+            .style(theme::soft_accent_button(false))
+            .into()
+    };
+
+    container(content)
+        .width(Length::Fill)
+        .align_x(Alignment::Center)
+        .padding(Padding::from([12, 0]))
+        .into()
 }
 
 fn track_header<'a>(downloads: bool) -> Element<'a> {

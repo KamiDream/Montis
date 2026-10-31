@@ -26,6 +26,11 @@ impl AppPaths {
         self.config_dir.join("session.json")
     }
 
+    /// 哔哩哔哩登录态（与网易云会话分开保存）。
+    pub fn bilibili_file(&self) -> PathBuf {
+        self.config_dir.join("bilibili.json")
+    }
+
     /// 音频可视化（环形频谱）的偏好设置。
     pub fn visualizer_file(&self) -> PathBuf {
         self.config_dir.join("visualizer.json")

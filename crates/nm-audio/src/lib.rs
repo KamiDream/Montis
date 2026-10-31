@@ -4,6 +4,7 @@
 //! * [`player`]：专用线程里的 rodio 播放器，主线程通过句柄控制。
 
 pub mod dsp;
+mod mp4;
 pub mod player;
 
 pub use dsp::{
